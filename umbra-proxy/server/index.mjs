@@ -241,7 +241,7 @@ function holdRedirect(ctx, res, from, to, status, mode, chain) {
   if (sameHost && policy === 'none' && false) return false;
 
   ctx.sessionObj && ctx.sessionObj.held++;
-  const tok = encodeToken({ u: to, t: ctx.tabId, s: ctx.session, m: 'd' });
+  const tok = encodeToken({ u: to, t: ctx.tabId, s: ctx.session, g: ctx.gen, m: 'd' });
   const body = `<div class="kicker">redirect held in tab</div>
 <h1>${esc(displayHost(from))} answered ${esc(status)} toward ${esc(displayHost(to))}</h1>
 <p class="muted">Umbra never lets a redirect move the page you are looking at. The destination was opened as
@@ -323,6 +323,7 @@ function localDoc(ctx, html, baseUrl, extraHead = '', logical = '') {
     tab: ctx.tabId,
     frame: 'top',
     key: ctx.key,
+    session: ctx.session || '',
     origin: ctx.origin,
     ephemeral: ctx.policy.ephemeral ? 1 : 0,
   };
@@ -389,7 +390,10 @@ async function serve(ctx, req, res, opts = {}) {
       which === 'home' ? 'umbra://home/' : which === 'help' ? 'umbra://protocol' : 'umbra://stats'));
   }
   const chain = [];
-  const maxHops = doc ? (ctx.policy.follow === 'all' ? DOC_HOPS : 1) : SUB_HOPS;
+  /* The hop cap is loop protection only — hold-vs-follow is decided per hop by
+     the policy in holdRedirect. Capping same-host chains at 1 would 508 any
+     site whose canonicalisation takes two hops (http→https→www is common). */
+  const maxHops = doc ? DOC_HOPS : SUB_HOPS;
   let up = null;
 
   for (let hop = 0; hop <= maxHops; hop++) {
@@ -432,6 +436,16 @@ async function serve(ctx, req, res, opts = {}) {
         stream: mode === 'm' || mode === 'r' || (doc === false && !['css', 'html', 'js', 'text'].includes(SNIFF(guessType(url)))),
       });
     } catch (e) {
+      /* https-first with a loopback fallback (browsers do the same when https
+         fails): umbra:// means https, but loopback services are usually plain
+         http. Scoped to loopback on the first hop only, so nothing on the
+         open web can ever be downgraded by it. */
+      if (hop === 0 && /^https:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\//i.test(url)) {
+        const httpUrl = url.replace(/^https:\/\//i, 'http://');
+        chain.push({ status: 0, url, location: httpUrl });
+        url = httpUrl;
+        continue;
+      }
       return send(res, 502, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'error', url, error: String(e.message || e) }) },
         errPage(ctx, url, 'upstream refused: ' + (e.message || e), chain));
     }
@@ -559,6 +573,7 @@ ${/json/.test(ct) ? '<script>try{var j=JSON.parse(document.querySelector("pre").
     tab: ctx.tabId,
     frame: 'top',
     key: ctx.key,
+    session: ctx.session || '',
     origin: ctx.origin,
     ephemeral: ctx.policy.ephemeral ? 1 : 0,
   };
@@ -586,7 +601,7 @@ function ytPill(ctx, vid) {
  border:1px solid rgba(143,214,200,.35);border-radius:999px;padding:8px 10px 8px 12px;box-shadow:0 14px 34px -14px #000">
  <span style="letter-spacing:.12em;text-transform:uppercase;font-size:10px;color:#8fd6c8">umbra</span>
  <a href="${PFX}c/${tok}/player.html" style="color:#eaf7f2;text-decoration:none;border:1px solid rgba(255,255,255,.18);
-  border-radius:999px;padding:6px 11px">play in the umbra player</button></a>
+  border-radius:999px;padding:6px 11px">play in the umbra player</a>
  <button onclick="this.parentNode.remove()" style="all:unset;cursor:pointer;color:#93a4bb;padding:0 4px" aria-label="dismiss">&times;</button></div>`;
 }
 
@@ -607,19 +622,22 @@ function localAddressToUrl(raw) {
   }
   return null;
 }
-function localHrefFor(raw, tabId) {
+function localHrefFor(raw, tabId, sid) {
   const u = localAddressToUrl(raw);
   if (!u) return null;
+  /* unsigned local URLs carry the session explicitly: a frame navigation
+     cannot set headers, and its cookies may be blocked as third-party. */
+  const tail = '?t=' + encodeURIComponent(tabId) + (sid ? '&sid=' + encodeURIComponent(sid) : '');
   if (u.startsWith('https://lab.umbra/')) {
     const key = /^https:\/\/lab\.umbra\/([\w-]+)/.exec(u)[1];
-    return PFX + 'lab/' + key + '?t=' + encodeURIComponent(tabId);
+    return PFX + 'lab/' + key + tail;
   }
   if (u.startsWith('https://portal.umbra/search')) {
     const qs = u.slice(u.indexOf('?'));
-    return PFX + 'search' + qs + '&format=html&t=' + encodeURIComponent(tabId);
+    return PFX + 'search' + qs + '&format=html&t=' + encodeURIComponent(tabId) + (sid ? '&sid=' + encodeURIComponent(sid) : '');
   }
   const which = /help/.test(u) ? 'help' : /stats/.test(u) ? 'stats' : 'home';
-  return PFX + 'doc/' + which + '?t=' + encodeURIComponent(tabId);
+  return PFX + 'doc/' + which + tail;
 }
 
 /* ======================================================== lab fixtures = */
@@ -736,6 +754,7 @@ control to another program must not survive.</p>
   <a id="tel" href="tel:+10000000000">tel: link</a>
   <a id="ext" href="https://example.com/">external http link</a>
 </p>
+<pre id="out">checking…</pre>
 <script>
   try {
     var cv = document.getElementById('blobish');
@@ -743,10 +762,9 @@ control to another program must not survive.</p>
   } catch (e) { document.getElementById('out').textContent = 'blob: ' + e.message; }
   document.getElementById('out').textContent =
     'js href=' + JSON.stringify(document.getElementById('js').getAttribute('href')) +
-    ' · data src kept=' + /^data:image\/svg/.test(document.getElementById('inline').getAttribute('src')) +
-    ' · ext href on wire=' + /\/~umbra\//.test(document.getElementById('ext').getAttribute('href'));
-</script>
-<pre id="out">checking…</pre>`,
+    ' · data src kept=' + /^data:image\\/svg/.test(document.getElementById('inline').getAttribute('src')) +
+    ' · ext href on wire=' + /\\/~umbra\\//.test(document.getElementById('ext').getAttribute('href'));
+</script>`,
   xhr: (ctx) => `<body><div class="kicker">fixture · fetch / xhr / beacon</div>
 <h1>Runtime-built requests are re-anchored by the shim</h1>
 <pre id="o">running…</pre>
@@ -830,6 +848,18 @@ async function webSearch(q) {
 }
 
 /* ======================================================== the player === */
+/* Caption tracks ship with a ready-to-use same-origin WebVTT url, so both the
+   player capsule and /ytj consumers get playable subtitles without minting. */
+function withVtt(payload, ctx) {
+  if (!payload || !payload.captions) return payload;
+  return {
+    ...payload,
+    captions: payload.captions.map((c) => ({
+      ...c,
+      vtt: PFX + 'vtt/' + encodeToken({ u: c.raw, t: ctx.tabId, s: ctx.session, g: ctx.gen, m: 's' }) + '/captions.vtt',
+    })),
+  };
+}
 async function servePlayer(req, res, ctx, t) {
   let payload;
   try {
@@ -839,11 +869,7 @@ async function servePlayer(req, res, ctx, t) {
   }
   if (!payload) payload = { videoId: t.v, ok: false, reason: 'not a youtube video url' };
   payload = {
-    ...payload,
-    captions: (payload.captions || []).map((c) => ({
-      ...c,
-      vtt: PFX + 'vtt/' + encodeToken({ u: c.raw, t: ctx.tabId, s: ctx.session, g: ctx.gen, m: 's' }) + '/captions.vtt',
-    })),
+    ...withVtt(payload, ctx),
     ctx: { origin: ctx.origin, tab: ctx.tabId, key: ctx.key },
   };
   const body = `<div class="kicker">umbra player · ${payload.ok ? 'native stream' : 'fallback'}</div>
@@ -930,6 +956,17 @@ async function route(req, res) {
   const sid = readSession(req);
   const seg = p.slice(PFX.length).split('/');
   const head = seg[0];
+  /* A signed wire token names its own session: decodeToken already verified
+     the HMAC, so a cookie-less request (blocked third-party cookies, curl) is
+     still fully authorized by the bearer it carries. Unsigned routes (p, lab,
+     doc, search) resolve through ?sid= / header / cookie instead. */
+  let s = session(sid);
+  if (!s && seg[1]) {
+    try {
+      const t0 = decodeToken(seg[1]);
+      if (t0 && t0.s) s = session(t0.s);
+    } catch {}
+  }
 
   if (head === 'boot') {
     let id = sid && sessions.has(sid) ? sid : newSession();
@@ -937,7 +974,6 @@ async function route(req, res) {
     res.setHeader('set-cookie', `${COOKIE_NAME}=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200`);
     return json(res, { session: id, protocol: 'umbra/1', modes: [...MODES], portal: PORTAL, ts: Date.now() });
   }
-  const s = session(sid);
   if (!s) return fail(res, 401, 'no umbra session', 'GET /~umbra/boot first');
 
   const mkCtx = (url, mode, tabId) => {
@@ -1009,15 +1045,25 @@ async function route(req, res) {
       ? JSON.parse((await readReq(req)).toString('utf8') || '{}')
       : Object.fromEntries(u.searchParams);
     const raw = String(body.url || '');
+    /* umbra://player?v=<id> mints a capsule token directly: the player is
+       Umbra-authored, so there is no upstream URL to resolve. */
+    if (/^umbra:\/\/player(\/|\?|$)/i.test(raw)) {
+      const vid = (/[?&]v=([\w-]{11})/.exec(raw) || [])[1] || '';
+      if (!vid) return fail(res, 400, 'player needs a video id', 'umbra://player?v=<11 chars>');
+      const tabId = body.tab ? tabOf(s, body.tab).id : 'shell';
+      const tok = encodeToken({ u: 'umbra://player/youtube', v: vid, t: tabId, s: s.id, g: s.gen, m: 'c' });
+      return json(res, { umbra: raw, href: PFX + 'c/' + tok + '/player.html' });
+    }
     const abs = localAddressToUrl(raw) || resolveRef(raw, 'https://invalid.umbra/');
-    const localHref = /^umbra:\/\/(portal|home|help|stats|protocol|lab|search|player)(\/|\?|$)/i.test(raw)
-      ? localHrefFor(raw, tabOf(s, body.tab || 'shell').id) : null;
+    const localHref = /^umbra:\/\/(portal|home|help|stats|protocol|lab|search)(\/|\?|$)/i.test(raw)
+      ? localHrefFor(raw, tabOf(s, body.tab || 'shell').id, s.id) : null;
     if (localHref) return json(res, { umbra: raw, href: localHref });
     if (!abs) return fail(res, 400, 'unmappable address', raw.slice(0, 160));
     const tabId = body.tab ? tabOf(s, body.tab).id : null;
+    const mode = MODES.has(body.mode) ? body.mode : 'd';
     return json(res, {
       umbra: toUmbra(abs),
-      href: href({ tabId: tabId || 'shell', session: s.id, gen: s.gen, url: abs }, abs, body.mode || 'd'),
+      href: href({ tabId: tabId || 'shell', session: s.id, gen: s.gen, url: abs }, abs, mode),
     });
   }
 
@@ -1057,7 +1103,7 @@ async function route(req, res) {
     const vid = String(u.searchParams.get('v') || '').slice(0, 20);
     if (!/^[\w-]{11}$/.test(vid)) return fail(res, 400, 'bad video id', vid);
     const ctx = mkCtx('https://www.youtube.com/watch?v=' + vid, 'c', u.searchParams.get('t'));
-    try { return json(res, await ytInspect(ctx.url, ctx), 200, metaHeaders({ kind: 'ytj', videoId: vid })); }
+    try { return json(res, withVtt(await ytInspect(ctx.url, ctx), ctx), 200, metaHeaders({ kind: 'ytj', videoId: vid })); }
     catch (e) { return fail(res, 502, 'inspect failed', String(e.message || e)); }
   }
 

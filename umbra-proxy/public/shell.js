@@ -58,7 +58,10 @@ async function api(pathname, opts = {}) {
   const r = await fetch(PFX + pathname, {
     credentials: 'same-origin',
     ...opts,
-    headers: { 'content-type': 'application/json', ...(opts.headers || {}) },
+    /* the boot-issued session rides the header too, so api calls survive
+       third-party cookie blocking (embedded previews, Safari, hardened
+       Chrome) that would otherwise 401 every mint after a healthy boot */
+    headers: { 'content-type': 'application/json', ...(S.session ? { 'x-umbra-session': S.session } : {}), ...(opts.headers || {}) },
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.detail || j.error || ('http ' + r.status));
@@ -221,7 +224,7 @@ function backgroundOpen(url) {
 async function closeTab(id) {
   const t = tab(id);
   if (!t) return;
-  fetch(PFX + 'tab.close?t=' + encodeURIComponent(id), { credentials: 'same-origin' }).catch(() => {});
+  fetch(PFX + 'tab.close?t=' + encodeURIComponent(id) + (S.session ? '&sid=' + encodeURIComponent(S.session) : ''), { credentials: 'same-origin' }).catch(() => {});
   t.node.remove();
   t.pane.remove();
   try { t.frame && (t.frame.src = 'about:blank'); } catch {}
@@ -263,15 +266,25 @@ function onFrameLoad(t) {
     const w = t.frame.contentWindow;
     where = w && w.location ? w.location.href : null;
   } catch { where = null; }
+  if (t.mode === 'srcdoc') {
+    /* a POST answer mounted verbatim: its location reads about:blank, which
+       is expected — not an escape. Same-origin by construction (the sandbox
+       carries allow-same-origin), so sync straight from it. */
+    t.mode = 'wire';
+    t.loading = false;
+    t.pendingNav = null;
+    renderTab(t);
+    syncFromFrame(t);
+    return;
+  }
   const offOrigin = where === null && t.mode === 'wire';
   if (t.mode === 'wire' && where && !where.startsWith(ORIGIN + PFX)) {
     // a script sent the frame somewhere Umbra does not control: undo it
     t.escapes = (t.escapes || 0) + 1;
     log('r', 'off-Umbra navigation attempted — frame reverted to ' + shortU(t.url));
     toast('a script tried to move this tab off Umbra. <b>reverted</b> and opened in a new tab instead', 4200, 'warn');
-    const target = t.pendingNav || t.url;
     t.pendingNav = null;
-    goto(t, target, { push: false, force: true });
+    goto(t, t.url, { push: false, force: true });
     return;
   }
   if (offOrigin) {
@@ -282,6 +295,7 @@ function onFrameLoad(t) {
     return;
   }
   t.loading = false;
+  t.pendingNav = null;
   renderTab(t);
   syncFromFrame(t);
 }
@@ -352,6 +366,30 @@ addEventListener('message', async (ev) => {
       await newTab(url);
       break;
     }
+    case 'render': {
+      /* a POST answer fetched by the shim: mount the server bytes verbatim in
+         a fresh frame, so the response renders with no joint-history entry —
+         exactly like a navigation, minus the navigation. Too big for srcdoc
+         degrades to a plain GET of the target instead of breaking. */
+      if (!t) return;
+      const html = String(d.html || '');
+      if (!html) return;
+      if (html.length > 2000000) { if (d.url) await goto(t, d.url, { push: true }); return; }
+      if (d.url) {
+        t.url = d.url;
+        if (t.hist[t.hi] !== t.url) { t.hist = t.hist.slice(0, t.hi + 1); t.hist.push(t.url); t.hi = t.hist.length - 1; }
+      }
+      if (d.wire) t.href = d.wire;
+      t.mode = 'srcdoc';
+      t.loading = true;
+      renderTab(t);
+      mountFrame(t, { srcdoc: html });
+      fetchFavicon(t);
+      log('d', 'POST ' + t.url);
+      renderAddr();
+      renderStatus();
+      break;
+    }
     case 'redirect': {
       const target = d.url;
       if (!target || !t) return;
@@ -407,7 +445,7 @@ function fetchFavicon(t) {
    tab strip like everything else and never touch browser history */
 async function runSearch(t, q) {
   if (!t) t = await newTab();
-  return gotoWire(t, PFX + 'search?q=' + encodeURIComponent(q), 'umbra://search/?q=' + encodeURIComponent(q));
+  return gotoWire(t, PFX + 'search?q=' + encodeURIComponent(q) + (S.session ? '&sid=' + encodeURIComponent(S.session) : ''), 'umbra://search/?q=' + encodeURIComponent(q));
 }
 
 async function gotoWire(t, wirePath, label) {

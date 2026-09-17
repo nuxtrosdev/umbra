@@ -8,7 +8,18 @@
  * file reaches into them through the active pane -- which is exactly the
  * property the tab system relies on.
  */
-import { chromium } from '/home/user/browsertest/node_modules/playwright/index.mjs';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+let chromium;
+try {
+  chromium = require('playwright').chromium;
+} catch {
+  try {
+    chromium = require('/home/user/browsertest/node_modules/playwright/index.mjs').chromium;
+  } catch {
+    chromium = (await import('playwright')).chromium;
+  }
+}
 
 const BASE = process.env.UMBRA_BASE || 'http://127.0.0.1:4173';
 const results = [];

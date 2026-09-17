@@ -20,6 +20,11 @@ const YT_HOSTS = new Set([
   'youtu.be', 'www.youtu.be', 'youtube.googleapis.com', 'gaming.youtube.com',
 ]);
 
+/* Test hook: the offline suite points watch-page fetches at the mock upstream.
+   Unset in every real deployment, where this is exactly www.youtube.com. */
+const YT_BASE = (process.env.UMBRA_YT_BASE || 'https://www.youtube.com').replace(/\/$/, '');
+const YT_ORIGIN = YT_BASE + '/';
+
 export function isYouTube(url) {
   try {
     return YT_HOSTS.has(new URL(url).hostname.toLowerCase());
@@ -128,14 +133,14 @@ function playable(f, kind) {
 export async function inspect(url, ctx) {
   const videoId = parseVideoId(url);
   if (!videoId) return null;
-  const watchUrl = 'https://www.youtube.com/watch?v=' + videoId + '&hl=en';
+  const watchUrl = YT_BASE + '/watch?v=' + videoId + '&hl=en';
   const res = await upstream(watchUrl, {
     headers: {
       accept: 'text/html,application/xhtml+xml',
       'accept-language': 'en-US,en;q=0.9',
       'upgrade-insecure-requests': '1',
       cookie: ctx.cookieJar.header(watchUrl),
-      referer: 'https://www.youtube.com/',
+      referer: YT_ORIGIN,
     },
   });
   const buf = await readBody(res.res, { limit: 60 * 1024 * 1024 });
@@ -157,13 +162,13 @@ export async function inspect(url, ctx) {
   // response had stripped.
   if (!pr || !(pr.streamingData && (pr.streamingData.formats || pr.streamingData.adaptiveFormats))) {
     try {
-      const rpc = await upstream('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      const rpc = await upstream(YT_BASE + '/youtubei/v1/player?prettyPrint=false', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'user-agent': 'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36',
-          origin: 'https://www.youtube.com',
-          referer: 'https://www.youtube.com/watch?v=' + videoId,
+          origin: YT_BASE,
+          referer: YT_BASE + '/watch?v=' + videoId,
           cookie: ctx.cookieJar.header(watchUrl),
         },
         body: JSON.stringify({
@@ -181,7 +186,7 @@ export async function inspect(url, ctx) {
           videoId,
           contentCheckOk: true,
           racyCheckOk: true,
-          thirdParty: { embedUrl: 'https://www.youtube.com/embed/' + videoId },
+          thirdParty: { embedUrl: YT_BASE + '/embed/' + videoId },
         }),
       });
       const j = JSON.parse((await readBody(rpc.res, { limit: 8 * 1024 * 1024 })).toString('utf8'));
