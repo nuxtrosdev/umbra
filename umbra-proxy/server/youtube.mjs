@@ -88,8 +88,11 @@ function harvest(html, marker) {
 }
 
 const Q = (s) => {
+  /* signatureCipher is a bare `url=…&s=…&sp=…` string with no '?', so only
+     split when there is actually a URL in front of the query */
   try {
-    return Object.fromEntries(new URLSearchParams(s.split('?')[1] || ''));
+    const q = String(s || '');
+    return Object.fromEntries(new URLSearchParams(q.includes('?') ? q.split('?')[1] : q));
   } catch {
     return {};
   }

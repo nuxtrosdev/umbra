@@ -213,6 +213,12 @@ async function wire() {
   await call('/~umbra/policy', J({ follow: 'all' }));
   const sub = await call((await mint(`${MOCK}/redirect-to?url=${encodeURIComponent(MOCK_ALT + '/photo.jpg')}&status_code=302`, 's', tn.tab)).href);
   ok('subresource 302 followed, never a capsule', sub.status === 200 && sub.bytes.length > 10 && !/redirect held/i.test(sub.text));
+  const c302 = await call((await mint(`${MOCK}/redirect-to?url=${encodeURIComponent('/post')}&status_code=302`, 'x', tn.tab)).href,
+    { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'dropped-body' });
+  ok('POST+302 downgrades to GET per fetch spec', c302.status === 200 && /"method":"GET"/.test(c302.text) && /"data":""/.test(c302.text), c302.text.slice(0, 90));
+  const c307 = await call((await mint(`${MOCK}/redirect-to?url=${encodeURIComponent('/post')}&status_code=307`, 'x', tn.tab)).href,
+    { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'kept-body' });
+  ok('POST+307 replays the body untouched', c307.status === 200 && /"method":"POST"/.test(c307.text) && /kept-body/.test(c307.text));
 
   /* ---- media + Range ---- */
   const mp4 = (await mint(MOCK + '/clip.mp4', 'm', tn.tab)).href;
@@ -228,6 +234,9 @@ async function wire() {
   /* ---- xhr / forms / cookies ---- */
   const x = await call((await mint(MOCK + '/get?via=xhr', 'x', tn.tab)).href);
   ok('mode x byte-exact + meta exposed', x.status === 200 && /"via":"xhr"/.test(x.text) && /x-umbra-meta/.test(x.headers.get('access-control-expose-headers') || ''));
+  const pj = await call((await mint(MOCK + '/post', 'x', tn.tab)).href,
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rpc: 'player', id: 7 }) });
+  ok('mode x forwards method+body (JSON RPC survives)', pj.status === 200 && /"method":"POST"/.test(pj.text) && /\\"rpc\\":\\"player\\"/.test(pj.text) && /"ct":"application\/json"/.test(pj.text), pj.text.slice(0, 110));
   const f = await call((await mint(MOCK + '/post', 'f', tn.tab)).href,
     { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'sent=hello+from+umbra' });
   ok('mode f forwards method+body, answers as document', f.status === 200 && /hello from umbra/.test(f.text), f.meta?.kind);
@@ -252,6 +261,10 @@ async function wire() {
   ok('runtime mint rejects a wrong frame key', (await call(`${PFX}p/d/${b64}/x?k=wrong&t=${tn.tab}`)).status === 403);
   const goodMint = await call(`${PFX}p/d/${b64}/x?k=${tn.key}&t=${tn.tab}`);
   ok('runtime mint serves with the right frame key', goodMint.status === 200 && /page two/.test(goodMint.text));
+  const b64p = Buffer.from(MOCK + '/post').toString('base64url');
+  const rp = await call(`${PFX}p/x/${b64p}/x?k=${tn.key}&t=${tn.tab}`,
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"ping":1}' });
+  ok('runtime mint forwards POST bodies (the page-fetch path)', rp.status === 200 && /"method":"POST"/.test(rp.text) && /\\"ping\\":1/.test(rp.text));
 
   /* ---- lab fixtures (local, deterministic) ---- */
   await call('/~umbra/policy', J({ follow: 'same-host' }));

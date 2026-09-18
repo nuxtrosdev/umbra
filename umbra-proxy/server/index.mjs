@@ -400,6 +400,11 @@ async function serve(ctx, req, res, opts = {}) {
      site whose canonicalisation takes two hops (http→https→www is common). */
   const maxHops = doc ? DOC_HOPS : SUB_HOPS;
   let up = null;
+  /* API fidelity: XHR/fetch keep their method and body upstream (innertube
+     RPCs are POSTs; dropping the body breaks every SPA that talks JSON). */
+  let upMethod = opts.method || (mode === 'f' ? 'POST' : 'GET');
+  let upBody = opts.body || null;
+  let upCt = opts.ct || null;
 
   for (let hop = 0; hop <= maxHops; hop++) {
     const headers = {
@@ -426,18 +431,18 @@ async function serve(ctx, req, res, opts = {}) {
     }
     if (mode === 's') headers.referer = headers.referer || (() => { try { return new URL(url).origin + '/'; } catch { return undefined; } })();
     if (opts.range) headers.range = opts.range;
-    if (mode === 'f') {
-      headers['content-type'] = opts.ct || 'application/x-www-form-urlencoded';
-      headers['content-length'] = String(opts.body ? opts.body.length : 0);
+    if (upBody) {
+      headers['content-type'] = upCt || 'application/x-www-form-urlencoded';
+      headers['content-length'] = String(upBody.length);
     }
 
     for (const k of Object.keys(headers)) if (headers[k] == null || headers[k] === '') delete headers[k];
 
     try {
       up = await upstream(url, {
-        method: mode === 'f' ? 'POST' : 'GET',
+        method: upMethod,
         headers,
-        body: mode === 'f' ? opts.body : null,
+        body: upBody,
         stream: mode === 'm' || mode === 'r' || (doc === false && !['css', 'html', 'js', 'text'].includes(SNIFF(guessType(url)))),
       });
     } catch (e) {
@@ -464,6 +469,11 @@ async function serve(ctx, req, res, opts = {}) {
       up.res.resume();
       if (!next) return send(res, 502, {}, errPage(ctx, up.url, 'unparseable redirect target: ' + String(loc).slice(0, 120), chain));
       if (holdRedirect(ctx, res, up.url, next, st, mode, chain)) return;
+      /* 301/302 downgrade POST to GET, 303 downgrades everything but HEAD;
+         307/308 replay the body untouched — exactly what fetch would do */
+      if (((st === 301 || st === 302) && upMethod === 'POST') || (st === 303 && upMethod !== 'HEAD')) {
+        upMethod = 'GET'; upBody = null; upCt = null;
+      }
       url = next;
       if (hop === maxHops) return send(res, 508, {}, errPage(ctx, url, 'redirect limit reached', chain));
       continue;
@@ -797,6 +807,7 @@ control to another program must not survive.</p>
 (async function(){
   var out=[];
   try{var r=await fetch('https://httpbin.org/get?via=fetch');var j=await r.json();out.push('fetch → '+r.status+' '+JSON.stringify(j.args))}catch(e){out.push('fetch failed: '+e)}
+  try{var rp=await fetch('https://httpbin.org/post',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({rpc:'player'})});var jp=await rp.json();out.push('fetch POST → '+rp.status+' '+(jp.data||'').slice(0,40))}catch(e){out.push('fetch POST failed: '+e)}
   try{var x=new XMLHttpRequest();x.open('GET','/relative-xhr.json');x.send();x.onloadend=function(){out.push('XHR relative → '+x.status)}}catch(e){out.push('xhr '+e)}
   try{var r2=await fetch('https://httpbin.org/headers');var j2=await r2.json();out.push('headers seen by origin: '+Object.keys(j2.headers).join(', '))}catch(e){}
   document.getElementById('o').textContent=out.join('\\n')
@@ -918,7 +929,7 @@ ${payload.ok
 select{font:inherit;font-size:12px;background:rgba(255,255,255,.07);color:#eaf1f8;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:7px 9px}
 iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:12px;background:#000}
 </style></head><body><main style="max-width:960px;width:100%">${body}</main>
-<script>${ji({ umbraCtx: 1 })}<\/script><script>${script}<\/script></body></html>`;
+<script>window.__UMBRA_CTX__=${ji({ umbraCtx: 1 })};<\/script><script>${script}<\/script></body></html>`;
   send(res, 200, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'player', videoId: t.v, ok: !!payload.ok }) }, html);
 }
 function fmtDur(s) {
@@ -1181,7 +1192,16 @@ async function route(req, res) {
     const t = decodeToken(seg[1]);
     if (!t || t.s !== s.id || t.g !== s.gen) return fail(res, 403, 'bad token', 'signature, session or generation mismatch');
     const ctx = mkCtx(t.u, head, t.t);
-    return serve(ctx, req, res, { mode: head, range: req.headers.range || null });
+    const mopts = { mode: head, range: req.headers.range || null };
+    if (req.method && !/^(GET|HEAD)$/i.test(req.method)) {
+      /* fetch/XHR with a payload (JSON RPCs, uploads): the body rode the
+         browser→origin leg untouched — forward it, don't drop it */
+      try { mopts.body = await readReq(req, 64 * 1024 * 1024); }
+      catch (e) { return fail(res, 413, 'request body too large', 'xhr payloads cap at 64 MB'); }
+      mopts.method = req.method.toUpperCase();
+      mopts.ct = req.headers['content-type'] || null;
+    }
+    return serve(ctx, req, res, mopts);
   }
 
   /* ---- caption conversion: json3 -> WebVTT, same-origin bytes ---- */
@@ -1229,7 +1249,14 @@ async function route(req, res) {
     }
     const ctx = mkCtx(abs, mode, tabId);
     ctx.referrer = /^https?:/.test(t.url || '') ? t.url : null;
-    return serve(ctx, req, res, { mode, range: req.headers.range || null });
+    const popts = { mode, range: req.headers.range || null };
+    if (req.method && !/^(GET|HEAD)$/i.test(req.method)) {
+      try { popts.body = await readReq(req, 64 * 1024 * 1024); }
+      catch (e) { return fail(res, 413, 'request body too large', 'xhr payloads cap at 64 MB'); }
+      popts.method = req.method.toUpperCase();
+      popts.ct = req.headers['content-type'] || null;
+    }
+    return serve(ctx, req, res, popts);
   }
 
   return notFound(res, p);

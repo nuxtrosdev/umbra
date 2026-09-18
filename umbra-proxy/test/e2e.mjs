@@ -167,6 +167,9 @@ const mint = async (url, mode = 'd', tab = null) => {
   const x = await mint('https://httpbin.org/get?via=xhr', 'x');
   const xhr = await call(x.href + '/g');
   ok('mode x byte-exact + meta exposed', xhr.status === 200 && /via/.test(xhr.text) && /x-umbra-meta/.test(xhr.headers.get('access-control-expose-headers') || ''), xhr.meta && xhr.meta.kind);
+  const xp = await mint('https://httpbin.org/post', 'x');
+  const xhrPost = await call(xp.href + '/p', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rpc: 'player' }) });
+  ok('mode x forwards method+body (JSON RPC survives)', xhrPost.status === 200 && /"rpc": "player"/.test(xhrPost.text), xhrPost.status);
   const f = await mint('https://httpbin.org/post', 'f');
   const post = await call(f.href + '/p', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'sent=hello+from+umbra' });
   ok('mode f forwards method+body', post.status === 200 && /hello from umbra/.test(post.text), (post.meta || {}).kind);

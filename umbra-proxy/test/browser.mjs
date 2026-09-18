@@ -170,7 +170,8 @@ ok('no image was fetched from its own host', imgs.every((i) => i.o), 'all same-o
 await go('umbra://lab/xhr', 6000);
 const xhrOut = await txtIn('#o');
 ok('page-side fetch() re-anchored to the wire', /fetch → 200/.test(xhrOut), xhrOut.split('\n')[0].slice(0, 90));
-ok('relative XHR resolved against the logical base', /XHR relative → 200/.test(xhrOut), xhrOut.split('\n')[1]);
+ok('relative XHR resolved against the logical base', /XHR relative → 200/.test(xhrOut), xhrOut.split('\n')[2]);
+ok('page-side fetch POST keeps method+body upstream', /fetch POST → 200.*"rpc":"player"/.test(xhrOut), xhrOut.split('\n')[1]);
 const seenOrigin = await inDoc((d) => d.querySelector('#o').textContent.includes('origin'));
 ok('upstream saw the proxy origin as referer (not the user)', seenOrigin, '');
 

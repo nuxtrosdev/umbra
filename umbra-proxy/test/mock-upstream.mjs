@@ -205,6 +205,7 @@ const server = http.createServer((req, res) => {
     out.push('XHR relative -> '+x.status+' '+x.responseText.slice(0,40))
   }catch(e){out.push('xhr '+e)}
   try{if(navigator.sendBeacon){navigator.sendBeacon('${base}/post','beacon=1');out.push('beacon sent')}}catch(e){out.push('beacon '+e)}
+  try{var rp=await fetch('${base}/post',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({rpc:'player'})});var jp=await rp.json();out.push('fetch POST -> '+rp.status+' '+(jp.data||'').slice(0,40))}catch(e){out.push('fetch POST failed: '+e)}
   document.getElementById('o').textContent=out.join('\\n')
 })();
 </script></body></html>`);
@@ -246,7 +247,7 @@ const server = http.createServer((req, res) => {
         }
       } catch {}
       return send(res, 200, { 'content-type': 'application/json' },
-        JSON.stringify({ form, data: raw, ct: req.headers['content-type'] || null }));
+        JSON.stringify({ form, data: raw, ct: req.headers['content-type'] || null, method: req.method }));
     });
   }
   if (p === '/headers') {

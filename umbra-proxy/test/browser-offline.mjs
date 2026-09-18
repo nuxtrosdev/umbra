@@ -194,6 +194,7 @@ try {
   ok('page-side fetch() re-anchored to the wire', /fetch -> 200/.test(netOut), netOut.split('\n')[0]);
   ok('relative XHR resolved against the logical base', /XHR relative -> 200/.test(netOut), netOut.split('\n')[1]);
   ok('beacon re-anchored', /beacon sent/.test(netOut));
+  ok('page-side fetch POST keeps method+body upstream', /fetch POST -> 200.*"rpc":"player"/.test(netOut), netOut.split('\n')[3]);
 
   /* -------------------------------------------------- forms through mode f */
   await go(U('/'), 3000);
