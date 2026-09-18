@@ -186,11 +186,15 @@ async function wire() {
   const png = await call((await mint(MOCK + '/pixel.png', 's', tn.tab)).href);
   ok('image bytes proxied', png.status === 200 && png.bytes.length > 40 && /image\/png/.test(png.headers.get('content-type') || ''), png.bytes.length + 'B');
 
-  /* ---- redirects: held vs followed ---- */
+  /* ---- redirects: browser-like by default, held on strict policy ---- */
+  const def = await call((await mint(`${MOCK}/redirect-to?url=${encodeURIComponent(MOCK_ALT + '/other')}&status_code=302`, 'd', tn.tab)).href);
+  ok('default policy follows a cross-host 3xx into one document', def.status === 200 && /other host doc/.test(def.text) && def.meta?.redirected === true && def.meta?.hops === 2,
+    'http ' + def.status + ' hops=' + def.meta?.hops);
+  await call('/~umbra/policy', J({ follow: 'same-host' }));
   const held = await call((await mint(`${MOCK}/redirect-to?url=${encodeURIComponent(MOCK_ALT + '/other')}&status_code=302`, 'd', tn.tab)).href);
-  ok('cross-host 3xx held as in-tab capsule', held.status === 200 && /redirect held/i.test(held.text) && held.meta?.kind === 'redirect-held',
+  ok('strict policy holds a cross-host 3xx as an in-tab capsule', held.status === 200 && /redirect held/i.test(held.text) && held.meta?.kind === 'redirect-held',
     'http ' + held.status + ' kind=' + held.meta?.kind);
-  ok('capsule payload routes the target to a new tab', /"type":"redirect"/.test(held.text) && held.text.includes('umbra://localhost'));
+  ok('capsule payload carries the redirect target', /"type":"redirect"/.test(held.text) && held.text.includes('umbra://localhost'));
   ok('capsule follow-link carries a VALID token (gen-bound)',
     await (async () => {
       const m = /href="(\/~umbra\/d\/[^"]+?)\/followed\.html"/.exec(held.text);
@@ -205,8 +209,8 @@ async function wire() {
   ok('policy follow=all collapses cross-host hops', /other host doc/.test(allF.text));
   await call('/~umbra/policy', J({ follow: 'none' }));
   const noneF = await call((await mint(`${MOCK}/redirect/2`, 'd', tn.tab)).href);
-  ok('policy split-every-hop holds even same-host', /redirect held/i.test(noneF.text));
-  await call('/~umbra/policy', J({ follow: 'same-host' }));
+  ok('policy hold-every-hop holds even same-host', /redirect held/i.test(noneF.text));
+  await call('/~umbra/policy', J({ follow: 'all' }));
   const sub = await call((await mint(`${MOCK}/redirect-to?url=${encodeURIComponent(MOCK_ALT + '/photo.jpg')}&status_code=302`, 's', tn.tab)).href);
   ok('subresource 302 followed, never a capsule', sub.status === 200 && sub.bytes.length > 10 && !/redirect held/i.test(sub.text));
 
@@ -250,11 +254,16 @@ async function wire() {
   ok('runtime mint serves with the right frame key', goodMint.status === 200 && /page two/.test(goodMint.text));
 
   /* ---- lab fixtures (local, deterministic) ---- */
+  await call('/~umbra/policy', J({ follow: 'same-host' }));
   for (const kind of ['redirect', 'samehost', 'meta', 'js', 'windowopen', 'image', 'video', 'form', 'frames', 'storage', 'schemes', 'xhr']) {
     const l = await call((await mint('umbra://lab/' + kind, 'd', tn.tab)).href);
     const wantCapsule = kind === 'redirect';
     ok('lab fixture ' + kind, l.status === 200 && (wantCapsule ? /redirect held/i.test(l.text) : /umbra-ctx/.test(l.text)), 'http ' + l.status);
   }
+  await call('/~umbra/policy', J({ follow: 'all' }));
+  const labFollow = await call((await mint('umbra://lab/redirect', 'd', tn.tab)).href);
+  ok('lab redirect follows in-tab under the default policy', labFollow.status === 200 && /followed like a browser/.test(labFollow.text) && labFollow.meta?.redirected === true,
+    'http ' + labFollow.status + ' kind=' + labFollow.meta?.kind);
   const schemes = await call((await mint('umbra://lab/schemes', 'd', tn.tab)).href);
   ok('schemes fixture: js/mailto inerted, data: kept, http rewired',
     /href="umbra:inert"/.test(schemes.text) && !/href="javascript:/i.test(schemes.text) &&

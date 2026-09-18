@@ -94,7 +94,7 @@
       return 'umbra://' + p.host + (p.pathname === '/' ? '/' : p.pathname) + p.search + p.hash;
     } catch (e) { return null; }
   }
-  window.UMBRA = { url: LOGICAL, dir: DIR, tab: ctx.tab, logical: logical, wire: wire, abs: abs, diag: DIAG };
+  window.UMBRA = { url: LOGICAL, dir: DIR, tab: ctx.tab, logical: logical, wire: wire, abs: abs, diag: DIAG, hops: ctx.hops || [] };
 
   /* ------------------------------------------ runtime reference hooks */
   var MODE_BY_ATTR = {
@@ -483,7 +483,9 @@
         if (!t) return;
         var delay = parseInt(m.getAttribute('data-umbra-delay') || '0', 10);
         setTimeout(function () {
-          post('redirect', { url: logical(t), status: 'meta-refresh', from: LOGICAL, holdHere: 1 });
+          /* a meta refresh is a navigation, not a new window: like a browser,
+             the tab itself moves to the target after the delay */
+          post('nav', { url: logical(t), why: 'meta-refresh' });
         }, Math.max(0, delay) * 1000);
       });
     };

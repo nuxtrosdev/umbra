@@ -44,7 +44,10 @@ function session(id) {
       gen: crypto.randomBytes(6).toString('hex'),
       cookieJar: new CookieJar(),
       tabs: new Map(),
-      policy: { follow: 'same-host', referrer: 'origin', ephemeral: 1 },
+      /* browser-like by default: redirects are followed transparently and the
+         tab lands on the final document. Stricter holds ('same-host', 'none')
+         are opt-in per session and pause on a review capsule instead. */
+      policy: { follow: 'all', referrer: 'origin', ephemeral: 1 },
       created: Date.now(),
       bytes: 0,
       reqs: 0,
@@ -165,20 +168,20 @@ main{max-width:720px;width:100%;background:rgba(19,24,34,.86);border:1px solid r
  border-radius:16px;padding:24px 26px;box-shadow:0 30px 70px -30px #000}
 h1{font-size:17px;margin:0 0 10px}h2{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#93a4bb;margin:20px 0 8px}
 .kicker{font:10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.16em;text-transform:uppercase;
- color:#8fd6c8;background:rgba(60,190,160,.11);border:1px solid rgba(60,190,160,.28);padding:6px 9px;
+ color:#a9ecff;background:rgba(157,140,255,.11);border:1px solid rgba(157,140,255,.28);padding:6px 9px;
  border-radius:99px;display:inline-block;margin-bottom:14px}
 u{display:block;text-decoration:none;font-family:ui-monospace,Menlo,monospace;font-size:12px;
  background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 12px;
- color:#a8e3d6;overflow-wrap:anywhere;margin:10px 0;word-break:break-all}
+ color:#a9ecff;overflow-wrap:anywhere;margin:10px 0;word-break:break-all}
 .row{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px;align-items:center}
 button,a.btn{font:inherit;font-size:13px;cursor:pointer;border-radius:10px;padding:9px 14px;
  border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#eaf1f8;text-decoration:none}
 button:hover,a.btn:hover{background:rgba(255,255,255,.12)}
-button.go{background:linear-gradient(180deg,#2fbf9f,#1f9a7f);border-color:#28b094;color:#04140f;font-weight:600}
+button.go{background:linear-gradient(180deg,#b3a8ff,#7c6cf0);border-color:#8f80f5;color:#0a0618;font-weight:600}
 .warn{color:#ffcf8b}.muted{color:#8b9bb4}
 pre{background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:12px;
- overflow:auto;font-size:12px;color:#bfd4e6;max-height:46vh}
-code{font:12px ui-monospace,monospace;background:rgba(255,255,255,.07);padding:1px 5px;border-radius:5px;color:#bfe9dd}
+ overflow:auto;font-size:12px;color:#bccbe0;max-height:46vh}
+code{font:12px ui-monospace,monospace;background:rgba(255,255,255,.07);padding:1px 5px;border-radius:5px;color:#c9c1ff}
 ul{padding-left:19px}li{margin:5px 0}table{border-collapse:collapse;width:100%;font-size:13px}
 td,th{border-bottom:1px solid rgba(255,255,255,.07);padding:6px 8px;text-align:left;vertical-align:top}
 th{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#8fa2ba}
@@ -203,7 +206,7 @@ var msg=${msg};
 function root(){try{var t=window.top;void t.location.href;return t}catch(e){try{return window.parent}catch(x){return null}}}
 function send(m){var t=root();if(t&&t.__UMBRA_SHELL__){try{t.postMessage(m,'*');return 1}catch(e){}}return 0}
 window.__umbraPost=function(type,p){return send(Object.assign({},msg,{type:type},p||{}))};
-send(msg);
+${kind === 'redirect' ? '/* a held hop waits for the reader: follow/open/keep above choose explicitly */' : 'send(msg);'}
 })();</script></body></html>`;
 }
 
@@ -242,15 +245,16 @@ function holdRedirect(ctx, res, from, to, status, mode, chain) {
 
   ctx.sessionObj && ctx.sessionObj.held++;
   const tok = encodeToken({ u: to, t: ctx.tabId, s: ctx.session, g: ctx.gen, m: 'd' });
-  const body = `<div class="kicker">redirect held in tab</div>
+  const followWire = `${PFX}d/${tok}/followed.html`;
+  const body = `<div class="kicker">redirect held for review</div>
 <h1>${esc(displayHost(from))} answered ${esc(status)} toward ${esc(displayHost(to))}</h1>
-<p class="muted">Umbra never lets a redirect move the page you are looking at. The destination was opened as
-its own tab in the Umbra strip; this frame is untouched. Your browser history gained nothing.</p>
+<p class="muted">Your redirect policy holds cross-host hops instead of following them. Nothing has moved yet —
+not this frame, not your place in the tab strip, and nothing in your browser history. Choose where this hop lands.</p>
 <u>${esc(toUmbra(from))} &nbsp;&#8594;&nbsp; ${esc(toUmbra(to))}</u>
 <h2>held response</h2>
 <pre>${esc(status + ' ' + (httpReason(status)))}</pre>
 <div class="row">
-  <a class="btn" href="${PFX}d/${tok}/followed.html">load it in THIS tab anyway</a>
+  <a class="btn" href="${followWire}" onclick="__umbraPost('nav',{wire:this.getAttribute('href')});return false">load it in THIS tab anyway</a>
   <button class="go" onclick="__umbraPost('open',{url:${ji(toUmbra(to))}})">open in a new umbra tab</button>
   <button onclick="__umbraPost('restore',{})">keep this page</button>
 </div>
@@ -326,6 +330,7 @@ function localDoc(ctx, html, baseUrl, extraHead = '', logical = '') {
     session: ctx.session || '',
     origin: ctx.origin,
     ephemeral: ctx.policy.ephemeral ? 1 : 0,
+    hops: [],
   };
   let out = injectShim(rewritten, ji(ctxObj), PFX + 'shim.js');
   out = out.replace(/<head[^>]*>/i, (m) => m + '<meta name="referrer" content="no-referrer"><meta name="umbra" content="local">');
@@ -576,6 +581,11 @@ ${/json/.test(ct) ? '<script>try{var j=JSON.parse(document.querySelector("pre").
     session: ctx.session || '',
     origin: ctx.origin,
     ephemeral: ctx.policy.ephemeral ? 1 : 0,
+    /* the redirect chain that landed here, oldest hop first — the shell shows
+       the final address in the bar and the hop count beside it. Synthetic
+       status-0 entries (https→http loopback fallback) are wire diagnostics,
+       not redirects, so they stay in the meta header but not in this list */
+    hops: chain.filter((c) => c.status !== 0).map((c) => ({ status: c.status, url: toUmbra(c.url) })),
   };
   docOut = injectShim(docOut, ji(ctxObj), PFX + 'shim.js');
   docOut = docOut.replace(/<head[^>]*>/i, (m) => m + '<meta name="referrer" content="no-referrer"><meta name="umbra" content="v1">');
@@ -644,18 +654,33 @@ function localHrefFor(raw, tabId, sid) {
 /* Deterministic probes so every guarantee in the spec can be exercised
    without depending on a third party changing its behaviour. */
 const LAB = {
-  redirect: Object.assign(() => `<body><div class="kicker">fixture · held 302</div>
+  redirect: Object.assign(() => `<body><div class="kicker">fixture · synthetic 302</div>
 <h1>This document answered with a redirect that was never sent to you</h1>
-<p class="muted">Umbra synthesised <code>302 -&gt; umbra://example.com/</code> here. The router applied the
-policy, held the hop, and opened the target as its own tab instead of moving this frame.</p>
+<p class="muted">Umbra synthesised <code>302 -&gt; umbra://example.com/</code> here and ran it through the
+same policy code as a real upstream hop: strict policies hold it for review, the default
+follows it the way a browser would.</p>
 <pre>GET umbra://lab/redirect
-&lt; 302 Found   Location: umbra://example.com/
-* policy split cross-host -&gt; capsule in this tab + new tab for the target</pre></body>`,
+&lt; 302 Found   Location: umbra://example.com/</pre></body>`,
     { direct: (ctx, res) => {
         const to = 'https://example.com/';
         const from = 'https://lab.umbra/redirect';
         // pretend upstream answered 302; let the shared policy code decide
-        holdRedirect({ ...ctx, policy: { ...ctx.policy, follow: ctx.policy.follow } }, res, from, to, 302, 'd', [{ status: 302, url: from, location: to }]);
+        const stayed = holdRedirect({ ...ctx, policy: { ...ctx.policy, follow: ctx.policy.follow } }, res, from, to, 302, 'd', [{ status: 302, url: from, location: to }]);
+        if (!stayed) {
+          /* the policy says follow: land on the synthetic target the way the
+             pipeline would after a real 302, chain and all */
+          send(res, 200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store',
+            ...metaHeaders({ kind: 'doc', url: to, umbra: toUmbra(to), status: 200, hops: 2, redirected: true, tab: ctx.tabId, chain: ['302 lab.umbra', '200 example.com'] }),
+          }, localDoc({ ...ctx, url: to }, `<body><div class="kicker">fixture · followed 302</div>
+<h1>One hop, followed like a browser</h1>
+<p class="muted">The synthetic <code>302 -&gt; umbra://example.com/</code> was followed in this tab.
+The address bar shows where you landed, not where you started.</p>
+<pre>GET umbra://lab/redirect
+&lt; 302 Found   Location: umbra://example.com/
+GET umbra://example.com/  (synthetic landing document)</pre></body>`, to, '', toUmbra(to)));
+        }
       } }),
   samehost: Object.assign(() => `<body></body>`, { direct: (ctx, res) => {
       // same-host 301 must be followed silently: one document, zero new tabs
@@ -937,7 +962,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-function s0() { return { follow: 'same-host', referrer: 'origin', ephemeral: 1 }; }
+function s0() { return { follow: 'all', referrer: 'origin', ephemeral: 1 }; }
 
 async function route(req, res) {
   let u;

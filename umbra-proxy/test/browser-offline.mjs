@@ -2,7 +2,7 @@
 /*
  * Umbra offline browser test. Drives the real shell in headless Chromium and
  * asserts the parts only a browser can prove — same-origin frames, shim
- * behaviour, redirect splitting, media decode, detached-frame adoption, the
+ * behaviour, redirect following, media decode, detached-frame adoption, the
  * many-frames perf guard — with every byte served from loopback (mock
  * upstream + Umbra origin are spawned automatically).
  *
@@ -205,12 +205,20 @@ try {
   await page.waitForTimeout(2800);
   ok('POST submit forwarded, response rendered in-frame', /hello from umbra/.test(await inDoc((d) => d.body.innerText)), (await txtIn('body')).slice(0, 80));
 
-  /* -------------------------------------------------- redirect split */
+  /* -------------------------------------------------- redirect: same tab */
   const t0 = await tabs();
   await go(U(`/redirect-to?url=${encodeURIComponent(`http://localhost:${MOCK_PORT}/other`)}&status_code=302`), 5500);
-  ok('cross-host 3xx opened a NEW umbra tab', (await tabs()) > t0, `${t0} → ${await tabs()} tabs`);
+  ok('cross-host 3xx lands in the SAME umbra tab', (await tabs()) === t0, `${t0} → ${await tabs()} tabs`);
   ok('no real browser window opened', popups.length === 0 && (await ctx.pages()).length === 1, 'popups ' + popups.length);
-  ok('held capsule visible in the kept tab', /held|redirect/i.test(await inDoc((d) => (d.body.innerText || '').replace(/\s+/g, ' ').slice(0, 160))));
+  ok('address bar shows the final address', new RegExp(`umbra://localhost:${MOCK_PORT}/other`).test(await addr()), await addr());
+  ok('final document rendered in the tab', /other host doc/.test(await txtIn('body')), (await txtIn('body')).slice(0, 60));
+  ok('hop count recorded on the tab', await page.evaluate(() => {
+    const s = window.__UMBRA__.state; const t = s.tabs.find((x) => x.id === s.active);
+    return !!(t && t.hops && t.hops.length === 2);
+  }), JSON.stringify(await page.evaluate(() => {
+    const s = window.__UMBRA__.state; const t = s.tabs.find((x) => x.id === s.active);
+    return t && t.hops;
+  })));
   await go('umbra://lab/samehost', 2500);
   ok('same-host redirect spawns no tab', /silently followed/.test(await txtIn('body')));
 
@@ -247,8 +255,10 @@ try {
 
   /* -------------------------------------------------- meta refresh */
   const t3 = await tabs();
-  await go('umbra://lab/meta', 6000);
-  ok('meta refresh split into its own tab', (await tabs()) > t3, `${t3} → ${await tabs()}`);
+  await go('umbra://lab/meta', 8000);
+  ok('meta refresh stays in the same tab', (await tabs()) === t3, `${t3} → ${await tabs()} tabs`);
+  ok('meta refresh moved the tab to the target', /umbra:\/\/en\.wikipedia\.org/.test(await addr()), await addr());
+  ok('meta target shows a document, never a blank tab', (await inDoc((d) => (d.body.innerText || '').trim().length)) > 40);
 
   /* ------------------------------------------ detached-frame adoption */
   await go(U('/'), 3000);

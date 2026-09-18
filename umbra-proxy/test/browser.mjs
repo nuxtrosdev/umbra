@@ -1,7 +1,8 @@
 /*
  * Umbra browser test. Drives the real shell in headless Chromium and asserts the
  * parts only a browser can prove: the outer tab never moves, redirects land in
- * the mini tab strip, media/images actually decode, page-side JS is re-anchored,
+ * the same mini tab with the final address showing, media/images actually decode,
+ * page-side JS is re-anchored,
  * and every request the browser makes is addressed to the Umbra origin.
  *
  * All proxied frames are same-origin with the shell by construction, so this
@@ -125,18 +126,14 @@ ok('…and the frame really navigated to the new umbra document', /iana/.test(aw
 ok('the in-page click added no browser history entry', (await hist()) === hist0, String(await hist()));
 ok('the browser tab never left the shell', page.url() === startUrl, page.url());
 
-/* -------------------------------------------- redirect: split into a tab */
+/* -------------------------------------------- redirect: same tab, final wins */
 const t0 = await tabs();
 await go('umbra://httpbin.org/redirect-to?url=https%3A%2F%2Fexample.com%2F&status_code=302', 5200);
 const t1 = await tabs();
-ok('cross-host 3xx opened a NEW umbra tab', t1 > t0, `${t0} → ${t1} tabs`);
+ok('cross-host 3xx lands in the SAME umbra tab', t1 === t0, `${t0} → ${t1} tabs`);
 ok('no real browser window was opened', popups.length === 0 && (await ctx.pages()).length === 1, 'popups ' + popups.length + ', pages ' + (await ctx.pages()).length);
-const capTxt = await inDoc((d) => (d.body.innerText || '').replace(/\s+/g, ' ').slice(0, 160));
-ok('held redirect visible in the strip (capsule), not a live navigation', /held|redirect/i.test(capTxt || ''), capTxt.slice(0, 110));
-ok('the redirect tab opened in the background (you keep your place)',
-  !(await page.$eval('.utab[aria-selected="true"] .u', (n) => n.textContent)).includes('example.com'), await page.$eval('.utab[aria-selected="true"] .u', (n) => n.textContent));
-const titlesNow = await page.$$eval('.utab .u', (n) => n.map((x) => x.textContent.trim()));
-ok('the redirect target became its own labelled tab', titlesNow.some((t) => /example/i.test(t)), titlesNow.join(' / '));
+ok('address bar shows the final address', /umbra:\/\/example\.com/.test(await addr()), await addr());
+ok('final document rendered in the frame', /Example Domain/.test(await txtIn('h1,title')), (await txtIn('h1')).slice(0, 60));
 ok('no 404s from umbra-authored routes', badResponses.length === 0, JSON.stringify(badResponses.slice(0, 3)));
 
 /* ------------------------------------------------- same-host hop, no split */
