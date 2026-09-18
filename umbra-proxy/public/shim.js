@@ -466,7 +466,8 @@
     try { L.assign = function (u) { route(u); }; } catch (e) {}
     try { L.replace = function (u) { route(u); }; } catch (e) {}
     /* `location.href = x` cannot be intercepted (Location is [Unforgeable]), so
-       the shell watches the frame's load event and reverts anything off-wire. */
+       the shell adopts readable same-origin landings onto the tab's logical
+       host and reverts only true off-origin escapes. */
   });
 
   /* ------------------------------------------------------ meta refresh */

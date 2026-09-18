@@ -240,6 +240,22 @@ try {
   ok('reversion recorded in the ledger', /off-origin|revert|escape/i.test(ledg), ledg.slice(0, 120));
   ok('escape costs at most one joint-history entry', (await hist()) - histBeforeEscape <= 1);
 
+  /* --------------------------------------- native-hop adoption (youtube pattern) */
+  const tAdopt = await tabs();
+  const histBeforeAdopt = await hist();
+  await go(U('/escape-test'), 3000);
+  await clickIn('button.go');
+  await page.waitForTimeout(3500);
+  ok('native location.href hop adopted onto the tab host', new RegExp(`umbra://127\\.0\\.0\\.1:${MOCK_PORT}/page2`).test(await addr()), await addr());
+  ok('adopted document rendered in the same tab', /page two/.test(await txtIn('body')) && (await tabs()) === tAdopt, `${tAdopt} tabs`);
+  ok('adoption cost at most the one unavoidable joint-history entry', (await hist()) - histBeforeAdopt <= 1, `${histBeforeAdopt} → ${await hist()}`);
+  await go(U('/escape-loop'), 8000);
+  ok('persistent escaper terminates at the error veil, not a loop', await page.evaluate(() => {
+    const v = document.querySelector('.pane[data-active] .veil');
+    return !!(v && !v.hidden && v.classList.contains('err'));
+  }));
+  ok('browser tab never left the shell through any of it', page.url() === startUrl, page.url());
+
   /* -------------------------------------------------- window.open */
   const t2 = await tabs();
   await go('umbra://lab/windowopen', 3000);
@@ -306,7 +322,7 @@ try {
 
   /* -------------------------------------------------- audits */
   const histFinal = await hist();
-  ok('history grew by at most the deliberate escape probe', histFinal - hist0 <= 1, `${hist0} → ${histFinal}`);
+  ok('history grew only by the deliberate native-hop probes', histFinal - hist0 <= 3, `${hist0} → ${histFinal} (escape, adoption, loop)`);
   ok('tab switching + reload added zero history entries', histAfterTabs - histBeforeTabs === 0, `${histBeforeTabs} → ${histAfterTabs}`);
   const offOrigin = requests.filter((u) => !u.startsWith(BASE) && !/^(data|about|blob):/.test(u));
   const leaky = offOrigin.filter((u) => !/^https:\/\/example\.com\/$/.test(u));

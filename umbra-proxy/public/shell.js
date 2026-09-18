@@ -162,8 +162,8 @@ function buildTabNode(t) {
        <p class="verr-msg"></p>
        <div class="verr-row"><button data-a="retry" class="primary">Retry</button><button data-a="portal" class="ghost">Portal</button></div>
      </div></div>`;
-  veil.querySelector('[data-a=retry]').onclick = () => goto(t, t.url, { push: false, force: true });
-  veil.querySelector('[data-a=portal]').onclick = () => goto(t, 'umbra://home/');
+  veil.querySelector('[data-a=retry]').onclick = () => goto(t, t.url, { push: false, force: true, fresh: true });
+  veil.querySelector('[data-a=portal]').onclick = () => goto(t, 'umbra://home/', { fresh: true });
   pane.appendChild(veil);
   const bar = document.createElement('div');
   bar.className = 'bar';
@@ -317,7 +317,10 @@ async function goto(t, url, opts = {}) {
   t.loading = true;
   t.mode = 'wire';
   t.hops = [];
-  t.fails = 0;
+  /* tripwire trips accumulate across shell-driven re-navigations (revert and
+     adoption below) so a hostile page terminates at the error veil instead of
+     looping; only fresh user intent clears the count */
+  if (opts.fresh) t.fails = 0;
   renderTab(t);
   veil(t, 'load', shortU(j.umbra));
   armWatchdog(t, 'wire document');
@@ -326,6 +329,19 @@ async function goto(t, url, opts = {}) {
   log('d', 'GET ' + t.url);
   renderAddr();
   renderStatus();
+}
+
+/* Reinterpret a same-origin, off-wire landing as a logical navigation: the
+   page meant `<path>` for its own site and the shell origin just happened to
+   be the base it resolved against. Null when there is nothing sane to adopt
+   (foreign landing, virtual umbra host, malformed tail). */
+function adoptOffWire(t, where) {
+  if (!where || !where.startsWith(ORIGIN + '/')) return null;
+  const m = /^umbra:\/\/([^/]+)/.exec(t.url || '');
+  if (!m || /^(home|portal|help|stats|protocol|lab|search)$/.test(m[1])) return null;
+  const tail = where.slice(ORIGIN.length);
+  if (!tail.startsWith('/')) return null;
+  return 'umbra://' + m[1] + tail;
 }
 
 function onFrameLoad(t) {
@@ -357,6 +373,21 @@ function onFrameLoad(t) {
       return;
     }
     t.fails = (t.fails || 0) + 1;
+    if (offWire && t.fails <= 3) {
+      /* a readable same-origin landing off the wire is an unhookable native
+         navigation (the location-href setter aimed at '/results…': the
+         YouTube search pattern), not an attack: adopt the path onto the
+         tab's logical host the way a browser would just go there. The native
+         hop already cost one joint-history entry — unavoidable, already
+         happened, ledgered below. */
+      const adopted = adoptOffWire(t, where);
+      if (adopted && adopted !== t.url) {
+        log('s', 'adopted same-origin hop → ' + shortU(adopted));
+        t.pendingNav = null;
+        goto(t, adopted, { push: true });
+        return;
+      }
+    }
     if (t.fails >= 2) {
       /* reverting again would loop forever (dead wire, hostile page): say so */
       t.loading = false;
@@ -432,7 +463,7 @@ addEventListener('message', async (ev) => {
   switch (d.type) {
     case 'nav': {
       if (!t) return;
-      if (d.wire && !d.url) return gotoWire(t, d.wire);
+      if (d.wire && !d.url) { t.fails = 0; return gotoWire(t, d.wire); }
       t.pendingNav = d.url;
       /* a proxied SPA calling history.pushState is an in-place replace, never
          a new entry: the umbra tab keeps its own stack instead */
@@ -495,7 +526,7 @@ addEventListener('message', async (ev) => {
     }
     case 'restore': {
       if (!t) return;
-      goto(t, t.hist[t.hi] || t.url, { push: false, force: true });
+      goto(t, t.hist[t.hi] || t.url, { push: false, force: true, fresh: true });
       break;
     }
     case 'title': {
@@ -538,18 +569,19 @@ function fetchFavicon(t) {
    tab strip like everything else and never touch browser history */
 async function runSearch(t, q) {
   if (!t) t = await newTab();
+  t.fails = 0;
   return gotoWire(t, PFX + 'search?q=' + encodeURIComponent(q) + (S.session ? '&sid=' + encodeURIComponent(S.session) : ''), 'umbra://search/?q=' + encodeURIComponent(q));
 }
 
-async function gotoWire(t, wirePath, label) {
+async function gotoWire(t, wirePath, label, fresh) {
   const abs = wirePath.startsWith('umbra://') ? null : wirePath;
-  if (!abs) return goto(t, wirePath);
+  if (!abs) return goto(t, wirePath, { fresh });
   t.url = label || t.url;
   t.href = abs;
   t.mode = 'wire';
   t.loading = true;
   t.hops = [];
-  t.fails = 0;
+  if (fresh) t.fails = 0;
   t.pendingNav = null;
   if (t.hist[t.hi] !== t.url) { t.hist = t.hist.slice(0, t.hi + 1); t.hist.push(t.url); t.hi = t.hist.length - 1; }
   renderTab(t); renderAddr();
@@ -652,7 +684,7 @@ async function interpret(text, inNewTab) {
     return runSearch(t, s);
   }
   if (inNewTab) await newTab(url);
-  else { const t = active() || await newTab(); await goto(t, url); }
+  else { const t = active() || await newTab(); await goto(t, url, { fresh: true }); }
 }
 
 async function panic() {
@@ -687,10 +719,10 @@ async function pollStats() {
 /* ------------------------------------------------------------- wiring */
 function wireUI() {
   $('#newtab').onclick = () => newTab();
-  $('#homeBtn').onclick = () => { const t = active(); if (t) goto(t, 'umbra://home/', { force: true }); };
-  $('#back').onclick = () => { const t = active(); if (t && t.hi > 0) { t.hi--; goto(t, t.hist[t.hi], { push: false, force: true }); } };
-  $('#fwd').onclick = () => { const t = active(); if (t && t.hi < t.hist.length - 1) { t.hi++; goto(t, t.hist[t.hi], { push: false, force: true }); } };
-  $('#reload').onclick = () => { const t = active(); if (t) goto(t, t.url, { push: false, force: true }); };
+  $('#homeBtn').onclick = () => { const t = active(); if (t) goto(t, 'umbra://home/', { force: true, fresh: true }); };
+  $('#back').onclick = () => { const t = active(); if (t && t.hi > 0) { t.hi--; goto(t, t.hist[t.hi], { push: false, force: true, fresh: true }); } };
+  $('#fwd').onclick = () => { const t = active(); if (t && t.hi < t.hist.length - 1) { t.hi++; goto(t, t.hist[t.hi], { push: false, force: true, fresh: true }); } };
+  $('#reload').onclick = () => { const t = active(); if (t) goto(t, t.url, { push: false, force: true, fresh: true }); };
   $('#goBtn').onclick = () => { const a = $('#addr'); a.dataset.rendered = a.value; interpret(a.value, false); };
   $('#goNew').onclick = () => { const a = $('#addr'); a.dataset.rendered = a.value; interpret(a.value, true); };
   $('#addr').addEventListener('keydown', (e) => {

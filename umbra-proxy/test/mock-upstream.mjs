@@ -172,6 +172,12 @@ const server = http.createServer((req, res) => {
   if (p === '/page2' || p === '/sub/page2') return send(res, 200, { 'content-type': 'text/html' }, '<!doctype html><title>p2</title><h1>page two</h1>');
   if (p === '/other') return send(res, 200, { 'content-type': 'text/html' }, '<!doctype html><title>other</title><h1>other host doc</h1>');
   if (p === '/frame') return send(res, 200, { 'content-type': 'text/html' }, '<!doctype html><title>framed</title><a href="/page2">x</a>');
+  /* native-hop probes: location.href= is [Unforgeable], so these navigate the
+     frame for real and the shell must adopt (or, for the loop, veil) */
+  if (p === '/escape-test') return send(res, 200, { 'content-type': 'text/html' },
+    '<!doctype html><title>escape probe</title><h1>escape probe</h1><button class="go">native hop</button><script>document.querySelector(".go").onclick=function(){location.href="/page2"};</script>');
+  if (p === '/escape-loop') return send(res, 200, { 'content-type': 'text/html' },
+    '<!doctype html><title>loop</title><h1>loop</h1><script>location.href="/escape-loop";</script>');
   if (p === '/style.css') return send(res, 200, { 'content-type': 'text/css' }, CSS);
   if (p === '/more.css') return send(res, 200, { 'content-type': 'text/css' }, 'p{color:red}');
   if (p === '/app.js') return send(res, 200, { 'content-type': 'application/javascript' }, 'console.log("mock-app");');
