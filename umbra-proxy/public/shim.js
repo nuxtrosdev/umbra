@@ -32,9 +32,6 @@
   var PFX = '/~umbra/';
   var LOGICAL = ctx.url;
   var DIR = ctx.dir;
-  /* runtime-minted wire urls carry the session explicitly: subresource
-     fetches cannot set headers, and their cookies may be blocked */
-  var SID = ctx.session || '';
 
   /* ------------------------------------------------------ shell channel */
   function root() {
@@ -82,8 +79,7 @@
       var seg = new URL(u).pathname.split('/').pop();
       var tail = /^[\w.~-]{1,64}$/.test(seg || '') ? '/' + encodeURIComponent(seg) : '';
       return ORIGIN + PFX + 'p/' + (mode || 's') + '/' + b64u(u) + tail +
-        '?k=' + encodeURIComponent(ctx.key) + '&t=' + encodeURIComponent(ctx.tab) +
-        (SID ? '&sid=' + encodeURIComponent(SID) : '');
+        '?k=' + encodeURIComponent(ctx.key) + '&t=' + encodeURIComponent(ctx.tab);
     } catch (e) { return 'about:blank'; }
   }
   function logical(u) {
@@ -94,7 +90,7 @@
       return 'umbra://' + p.host + (p.pathname === '/' ? '/' : p.pathname) + p.search + p.hash;
     } catch (e) { return null; }
   }
-  window.UMBRA = { url: LOGICAL, dir: DIR, tab: ctx.tab, logical: logical, wire: wire, abs: abs, diag: DIAG, hops: ctx.hops || [] };
+  window.UMBRA = { url: LOGICAL, dir: DIR, tab: ctx.tab, logical: logical, wire: wire, abs: abs, diag: DIAG };
 
   /* ------------------------------------------ runtime reference hooks */
   var MODE_BY_ATTR = {
@@ -131,11 +127,9 @@
           var before = typeof v === 'string' && v.indexOf('umbra://') === 0 ? v : null;
           d.set.call(this, wire(v, mode));
           /* keep the logical address beside it so clicks route exactly, even
-             for anchors the page built itself. Never derive it from an
-             already-wire value: logical() can only translate real refs, and a
-             wire path translated again is a garbage address. */
-          if (name === 'href' || name === 'src' || name === 'action') {
-            var lg = before || (!onWire(v) && logical(v));
+             for anchors the page built itself */
+          if (name === 'href' || name === 'src') {
+            var lg = before || logical(v);
             if (lg) { try { nativeSetAttribute.call(this, 'data-umbra', lg); } catch (e) {} }
           }
         },
@@ -184,12 +178,6 @@
       }
       if (MODE_BY_ATTR[n] || (this.tagName === 'SOURCE' && n === 'src')) {
         if (n === 'href') { var lg = logical(value); if (lg) nativeSetAttribute.call(this, 'data-umbra', lg); }
-        /* form actions keep their logical twin too, so submits route from the
-           real destination instead of re-translating the opaque wire token */
-        if ((n === 'action' || n === 'formaction') && !onWire(value)) {
-          var lg2 = logical(value);
-          if (lg2) nativeSetAttribute.call(this, 'data-umbra', lg2);
-        }
         return nativeSetAttribute.call(this, name, wire(value, modeFor(this, n)));
       }
       return nativeSetAttribute.call(this, name, value);
@@ -263,7 +251,7 @@
         var a = abs(u);
         if (!a) return new WS('ws://127.0.0.1:1/');
         var url = new URL(a);
-        return new WS(wss + PFX + 'w/' + b64u(url.href.replace(/^http/, 'ws')) + '/ws?k=' + encodeURIComponent(ctx.key) + '&t=' + encodeURIComponent(ctx.tab) + (SID ? '&sid=' + encodeURIComponent(SID) : ''), p);
+        return new WS(wss + PFX + 'w/' + b64u(url.href.replace(/^http/, 'ws')) + '/ws?k=' + encodeURIComponent(ctx.key) + '&t=' + encodeURIComponent(ctx.tab), p);
       };
       UmbraSocket.prototype = WS.prototype;
       UmbraSocket.CONNECTING = WS.CONNECTING; UmbraSocket.OPEN = WS.OPEN;
@@ -365,9 +353,7 @@
     document.addEventListener('submit', function (ev) {
       var f = ev.target;
       if (!f || !f.tagName || f.tagName !== 'FORM') return;
-      var submitter = null;
-      try { submitter = ev.submitter || null; } catch (e0) { submitter = null; }
-      var fa = (submitter && submitter.getAttribute && submitter.getAttribute('formaction')) || f.getAttribute('action');
+      var fa = f.getAttribute('action');
       if (fa && fa.indexOf('umbra://') === 0) {
         /* a umbra-native action (the portal search box) resolves through the shell */
         ev.preventDefault();
@@ -379,68 +365,19 @@
         } catch (e) {}
         return;
       }
-      var method = String((submitter && submitter.getAttribute && submitter.getAttribute('formmethod')) || f.method || 'get').toUpperCase();
-      if (method === 'DIALOG') return; /* closes a dialog; never a navigation */
-      var target = String((submitter && submitter.getAttribute && submitter.getAttribute('formtarget')) || f.target || '');
-      if (target && target !== '_self') return; /* aimed elsewhere: leave it native */
       if (!fa || !onWire(fa)) { try { f.setAttribute('action', wire(fa || LOGICAL, 'f')); } catch (e) {} }
-      /* the logical twin stashed beside the wire token is the only exact
-         source of the destination: the token itself is opaque. */
-      var lu = f.getAttribute('data-umbra');
-      if (submitter && submitter.getAttribute && submitter.getAttribute('formaction') &&
-          submitter.getAttribute('data-umbra')) lu = submitter.getAttribute('data-umbra');
-      if (!lu || lu.indexOf('umbra://') !== 0) lu = LOGICAL;
-      var fd = null;
-      try { fd = submitter ? new FormData(f, submitter) : new FormData(f); }
-      catch (e1) { try { fd = new FormData(f); } catch (e2) { return; } }
-      if (method !== 'POST') {
-        /* GET (and anything the page misspelled into one): serialise the
-           fields onto the logical action and route it as a tab navigation —
-           the frame element is replaced, so no history entry is made. */
+      if (String(f.method || 'get').toUpperCase() === 'GET') {
         ev.preventDefault();
         try {
-          var u = new URL(lu);
+          var u = new URL(abs(f.getAttribute('action') || '') || DIR);
           var sp2 = new URLSearchParams();
-          fd.forEach(function (v, k) { if (typeof v === 'string') sp2.append(k, v); });
+          new FormData(f).forEach(function (v, k) { if (typeof v === 'string') sp2.append(k, v); });
           var q = sp2.toString();
           if (q) u.search = q;
-          post('nav', { url: u.href, why: 'form-get' });
+          var lg = logical(u.href);
+          if (lg) post('nav', { url: lg, why: 'form-get' });
         } catch (e) {}
-        return;
       }
-      /* POST: a native submit would navigate this frame — one joint-history
-         entry per form — so the bytes go by fetch and the rewritten document
-         the origin answers with is mounted verbatim in a fresh, entryless
-         frame. Anything unexpected falls back to a native submit: functional
-         first, cloaked when possible. */
-      ev.preventDefault();
-      try {
-        var action = f.getAttribute('action') || '';
-        if (submitter && submitter.getAttribute && submitter.getAttribute('formaction')) {
-          action = submitter.getAttribute('formaction');
-        }
-        if (!onWire(action)) action = wire(action || LOGICAL, 'f');
-        var enc = String((submitter && submitter.getAttribute && submitter.getAttribute('formenctype')) || f.enctype || '').toLowerCase();
-        var body = null, ct = null;
-        if (enc.indexOf('multipart/form-data') !== -1) { body = fd; }
-        else if (enc.indexOf('text/plain') !== -1) {
-          var lines = [];
-          fd.forEach(function (v, k) { lines.push(k + '=' + v); });
-          body = lines.join('\r\n'); ct = 'text/plain;charset=UTF-8';
-        } else {
-          var sp3 = new URLSearchParams();
-          fd.forEach(function (v, k) { if (typeof v === 'string') sp3.append(k, v); });
-          body = sp3.toString(); ct = 'application/x-www-form-urlencoded;charset=UTF-8';
-        }
-        var headers = {};
-        if (ct) headers['Content-Type'] = ct;
-        fetch(action, { method: 'POST', headers: headers, body: body }).then(function (r) {
-          if (!r.ok) throw new Error('post status ' + r.status);
-          return r.text();
-        }).then(function (html) {
-          post('render', { url: lu, wire: action, html: String(html) });
-        }).catch(function () { try { f.submit(); } catch (e3) {} });
-      } catch (e) { try { f.submit(); } catch (e4) {} }
     }, true);
   });
 
@@ -466,32 +403,20 @@
     try { L.assign = function (u) { route(u); }; } catch (e) {}
     try { L.replace = function (u) { route(u); }; } catch (e) {}
     /* `location.href = x` cannot be intercepted (Location is [Unforgeable]), so
-       the shell adopts readable same-origin landings onto the tab's logical
-       host and reverts only true off-origin escapes. */
+       the shell watches the frame's load event and reverts anything off-wire. */
   });
 
   /* ------------------------------------------------------ meta refresh */
   step('refresh', function () {
-    /* The shim runs in <head>, before <body> exists — a refresh tag in the
-       body would be invisible to a single synchronous scan, so scan again
-       once parsing is done. Each tag is armed exactly once. */
-    var arm = function () {
-      var metas = document.querySelectorAll('meta[data-umbra-target]');
-      Array.prototype.forEach.call(metas, function (m) {
-        if (m.__umbraArmed) return;
-        m.__umbraArmed = 1;
-        var t = m.getAttribute('data-umbra-target');
-        if (!t) return;
-        var delay = parseInt(m.getAttribute('data-umbra-delay') || '0', 10);
-        setTimeout(function () {
-          /* a meta refresh is a navigation, not a new window: like a browser,
-             the tab itself moves to the target after the delay */
-          post('nav', { url: logical(t), why: 'meta-refresh' });
-        }, Math.max(0, delay) * 1000);
-      });
-    };
-    arm();
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arm, { once: true });
+    var metas = document.querySelectorAll('meta[data-umbra-target]');
+    Array.prototype.forEach.call(metas, function (m) {
+      var t = m.getAttribute('data-umbra-target');
+      if (!t) return;
+      var delay = parseInt(m.getAttribute('data-umbra-delay') || '0', 10);
+      setTimeout(function () {
+        post('redirect', { url: logical(t), status: 'meta-refresh', from: LOGICAL, holdHere: 1 });
+      }, Math.max(0, delay) * 1000);
+    });
   });
 
   /* ------------------------------------------------ ephemeral storage cloak */
@@ -731,10 +656,7 @@
     }
 
     function patchRealm(win) {
-      if (!win) return false;
-      /* idempotent success: the realm is patched, so there is nothing left
-         to retry — callers treat false as "queue me again". */
-      if (win.__UMBRA_REALM__) return true;
+      if (!win || win.__UMBRA_REALM__) return false;
       var doc = win.document;
       if (!doc) return false;
       var mw = mwOf(win);
@@ -840,64 +762,27 @@
 
     function adopt(win) {
       if (!win || win === window) return false;
-      try {
-        /* already adopted, or carrying the server-injected shim: that is
-           success, not failure. Reporting false here re-queues the frame and
-           the retry drain below spins on it forever. */
-        if (win.__UMBRA_SHIM__ || win.__UMBRA_REALM__) { patchRealm(win); injectShimInto(win); return true; }
-      } catch (e0) { return false; } /* cross-origin: nothing we can do from here */
-      try { void win.document.location.href; } catch (e) { return false; }
+      try { void win.document.location.href; } catch (e) { return false; } /* cross-origin: nothing we can do from here */
       var patched = patchRealm(win);
       injectShimInto(win);
       return patched;
     }
 
     var pending = [];
-    /* Native getter, captured BEFORE adoptNode can run: adoptNode is invoked
-       synchronously from the createElement hook below, so this must already
-       be defined (var hoisting alone would leave it undefined on first use). */
-    var winGetter = null;
-    try { winGetter = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get; } catch (e) {}
-    function winOf(el) {
-      if (!el) return null;
-      try {
-        if (el.__umbraWin) return el.__umbraWin;
-        if (winGetter) return (el.__umbraWin = winGetter.call(el));
-      } catch (e) {}
-      return null;
-    }
-    /* A frame whose document is still arriving (readyState 'loading', no ctx
-       yet) is left for its load event — the server-injected shim comes with
-       the document. The throwaway initial realm (about:blank, readyState
-       'complete') IS adopted eagerly, so page script can never touch an
-       unpatched realm; when the real document commits, adoption succeeds
-       again as a no-op and the frame leaves the retry queue. */
-    function navigationPending(el, w) {
-      var src = '';
-      try { src = String(el.getAttribute && el.getAttribute('src') || ''); } catch (e) { src = ''; }
-      if (!src || src === 'about:blank' || /^(about|javascript|data):/i.test(src)) return false;
-      if (el.hasAttribute && el.hasAttribute('srcdoc')) return false;
-      try {
-        if (w && (w.__UMBRA_SHIM__ || w.__UMBRA_REALM__)) return false;
-        var d = w && w.document;
-        if (d && d.getElementById && d.getElementById('umbra-ctx')) return false;
-        if (d && d.readyState === 'complete') return false;
-      } catch (e2) { return true; }
-      return true;
-    }
     function adoptNode(el) {
       if (!el) return;
-      if (!el.__umbraLoadHooked) {
-        el.__umbraLoadHooked = 1;
-        try { el.addEventListener('load', function () { try { el.__umbraWin = null; } catch (e) {} adoptNode(el); }); } catch (e) {}
-      }
-      var w = winOf(el);
-      if (w && navigationPending(el, w)) {
-        if (pending.indexOf(el) === -1 && pending.length < 64) pending.push(el);
-        return;
-      }
+      var w = null;
+      try { w = el.__umbraWin || (el.__umbraWin = winGetter.call(el)); } catch (e) { w = null; }
       if (adopt(w)) return;
       if (pending.indexOf(el) === -1 && pending.length < 64) pending.push(el);
+    }
+    function eachFrame(node, fn) {
+      if (!node || node.nodeType !== 1) return;
+      if (/^(IFRAME|FRAME)$/.test(node.tagName)) fn(node);
+      if (node.querySelectorAll) {
+        var inner = node.querySelectorAll('iframe, frame');
+        for (var i = 0; i < inner.length; i++) fn(inner[i]);
+      }
     }
     /* a detached frame is adoptable the moment it exists — its document.write
        already runs a parser that will fetch whatever it is handed */
@@ -937,6 +822,7 @@
         return r;
       };
     });
+    var winGetter = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get;
     ['contentDocument', 'contentWindow'].forEach(function (prop) {
       var proto = HTMLIFrameElement.prototype;
       var d = Object.getOwnPropertyDescriptor(proto, prop);
@@ -952,8 +838,8 @@
             /* read the window through the *native* getter: calling this.contentWindow
                here would re-enter this same function */
             try {
-              var w = winOf(this);
-              if (w && !navigationPending(this, w)) { patchRealm(w); injectShimInto(w); }
+              var w = this.__umbraWin || (this.__umbraWin = winGetter.call(this));
+              if (w) { patchRealm(w); injectShimInto(w); }
             } catch (e2) {}
             return v;
           },
@@ -962,32 +848,16 @@
       } catch (e) {}
     });
     ADOPT.adoptNode = adoptNode;
-    /* bounded backstop, not a heartbeat: it stops once the page settles
-       (no pending frames and a stable frame count for several ticks), and it
-       never runs longer than ~15s. Each tick is O(frames), and ticks stop. */
-    var ticks = 0, stable = 0, lastCount = -1;
-    var hadFrames = false;
+    /* bounded backstop, not a heartbeat: it stops once the page settles */
+    var ticks = 0;
     var sweep = setInterval(function () {
       try {
-        /* budgeted drain: frames adoptNode re-queues wait for the next tick.
-           An unbounded while here spins forever on any frame whose adoption
-           keeps failing (or keeps reporting failure) within one tick. */
-        var budget = pending.length;
-        while (budget-- > 0 && pending.length) { var el2 = pending.shift(); if (el2) adoptNode(el2); }
-        ticks++;
-        if (ticks > 60 || (document.hidden && ticks > 20)) return clearInterval(sweep);
-        var n = 0;
-        try { n = document.querySelectorAll('iframe, frame').length; } catch (e) { n = 0; }
-        if (n > 0) hadFrames = true;
-        if (n === lastCount && pending.length === 0) {
-          if (++stable >= 6 && (ticks > 8 || !hadFrames)) return clearInterval(sweep);
-        } else {
-          stable = 0;
-          lastCount = n;
-          if (n > 0 && n <= 200) {
-            var fs = document.querySelectorAll('iframe, frame');
-            for (var i = 0; i < fs.length; i++) adoptNode(fs[i]);
-          }
+        while (pending.length) { var el2 = pending.shift(); if (el2) adoptNode(el2); }
+        if (++ticks > 60 || document.hidden && ticks > 20) return clearInterval(sweep);
+        if ((document.__umbraFrameCount || 0) !== (document.querySelectorAll('iframe, frame').length)) {
+          document.__umbraFrameCount = document.querySelectorAll('iframe, frame').length;
+          var fs = document.querySelectorAll('iframe, frame');
+          for (var i = 0; i < fs.length; i++) adoptNode(fs[i]);
         }
       } catch (e) { clearInterval(sweep); }
     }, 250);
@@ -995,23 +865,16 @@
 
   /* ------------------------------------------------------ title + uplink */
   step('title', function () {
+    var tEl = document.querySelector('title');
     var last = '';
     var emit = function () {
-      var t = (document.title || '').trim();
+      var t = ((tEl && tEl.textContent) || '').trim();
       if (t && t !== last) { last = t; post('title', { title: t.slice(0, 120) }); }
     };
-    /* <title> usually comes after the shim in <head>, so observe lazily: arm
-       now if it is already parsed, otherwise arm once parsing is done. */
-    var arm = function () {
-      var tEl = document.querySelector('title');
-      if (tEl && !tEl.__umbraWatched) {
-        tEl.__umbraWatched = 1;
-        try { new MutationObserver(emit).observe(tEl, { childList: true, characterData: true, subtree: true }); } catch (e) {}
-      }
-      emit();
-    };
-    arm();
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', arm, { once: true });
+    if (tEl) {
+      try { new MutationObserver(emit).observe(tEl, { childList: true, characterData: true, subtree: true }); } catch (e) {}
+    }
+    emit();
     post('title', { title: (document.title || '').trim() });
   });
 

@@ -64,18 +64,6 @@
     video.onerror = function () {
       readout.textContent = 'this browser cannot decode the chosen track (' + (video.error ? ['ABORTED', 'NETWORK', 'DECODE', 'SRC_NOT_SUPPORTED', 'MEDIA_ERR'][video.error.code - 1] : '?') + ') — switch codec/quality above, or use the proxied embed.';
     };
-    /* stall watchdog: error events cover failures, but a throttled or expired
-       stream just sits at readyState 0 forever — black with no message. Say so. */
-    if (video.__umbraStall) clearInterval(video.__umbraStall);
-    var stallSince = Date.now();
-    video.__umbraStall = setInterval(function () {
-      if (video.error || video.readyState >= 2) { stallSince = Date.now(); return; }
-      if (video.networkState === 2 && Date.now() - stallSince > 20000) {
-        clearInterval(video.__umbraStall);
-        video.__umbraStall = null;
-        readout.textContent = 'no frame in 20s (still loading, readyState ' + video.readyState + ') — the wire may be throttled or the stream URL expired; try another track above, or the proxied embed.';
-      }
-    }, 5000);
   }
 
   function mount() {

@@ -9,12 +9,12 @@
 </head>
 <body>
 <div id="app">
-  <div id="aurora" aria-hidden="true"></div>
 
   <header id="chrome">
     <div class="brand" title="Umbra protocol v1 — everything below this line is one opaque browser page">
-      <span class="mark" aria-hidden="true"></span>
+      <span class="mark"></span>
       <span class="word">umbra</span>
+      <span class="v">1</span>
     </div>
 
     <div id="tabstrip" role="tablist" aria-label="Umbra tabs"></div>
@@ -22,17 +22,15 @@
 
     <div class="spacer"></div>
 
-    <div class="actions">
-      <button class="ghost" id="cloakBtn" title="Rename + refavicon this browser tab so nothing is legible in the tab bar or history title">
-        <span class="dot" id="cloakDot"></span><span class="lbl">Cloak</span>
-      </button>
-      <button class="ghost" id="splitBtn" title="Split view: show two Umbra tabs side by side (shift-click a tab to pick the second)">Split</button>
-      <button class="danger" id="panicBtn" title="Panic: wipe all Umbra tabs, cookies and logs instantly (~ pressed twice also works)">Panic</button>
-    </div>
+    <button class="ghost" id="cloakBtn" title="Rename + refavicon this browser tab so nothing is legible in the tab bar or history title">
+      <span class="dot" id="cloakDot"></span> Cloak
+    </button>
+    <button class="ghost" id="splitBtn" title="Split view: show two Umbra tabs side by side">Split</button>
+    <button class="danger" id="panicBtn" title="Panic: wipe all Umbra tabs, cookies and logs instantly (~ pressed twice also works)">Panic</button>
   </header>
 
   <div id="nav">
-    <div class="navgroup" role="toolbar" aria-label="tab navigation">
+    <div class="navgroup">
       <button id="back" title="Back (in-tab history, never browser history)" aria-label="back">‹</button>
       <button id="fwd" title="Forward" aria-label="forward">›</button>
       <button id="reload" title="Reload this Umbra tab" aria-label="reload">↻</button>
@@ -42,18 +40,18 @@
     <div id="addrwrap">
       <span id="schemabadge" title="Umbra is not http(s): the browser only ever sees this opaque origin">umbra://</span>
       <input id="addr" spellcheck="false" autocomplete="off" autocapitalize="off"
-             placeholder="host/path, a URL, or words to search">
+             placeholder="umbra://host/path, a URL, or words to search">
       <span id="hint" class="hint"></span>
       <button id="goBtn" title="Open in this tab (Enter)">Go</button>
       <button id="goNew" title="Open in a new Umbra tab">New tab</button>
     </div>
 
-    <div class="navgroup pols">
-      <label class="sel" title="How redirects are treated — like a browser by default">redirects
+    <div class="navgroup">
+      <label class="sel" title="How held redirects are treated">redirect
         <select id="polRedirect">
-          <option value="all" selected>follow all</option>
-          <option value="same-host">hold cross-host</option>
-          <option value="none">hold every hop</option>
+          <option value="same-host">split cross-host</option>
+          <option value="all">follow all</option>
+          <option value="none">split every hop</option>
         </select>
       </label>
       <label class="sel" title="What Referer the upstream sees">referer
@@ -65,18 +63,14 @@
       </label>
     </div>
   </div>
-  <div id="progress" aria-hidden="true"><i></i></div>
 
   <div id="stage">
     <div class="panes" id="panes"></div>
     <div id="empty">
       <div class="emptycard">
-        <div class="eclipse" aria-hidden="true"></div>
         <h1>Umbra</h1>
-        <p>A web proxy that speaks its own scheme. One browser history entry — this one — forever.
-        Type an address above; redirects land in the same tab, like a browser.</p>
+        <p>A web proxy that speaks its own scheme. One browser history entry — this one — forever.</p>
         <button class="primary" id="emptyOpen">Open the portal</button>
-        <div class="keys"><span><kbd>ctrl</kbd><kbd>t</kbd> tab</span><span><kbd>ctrl</kbd><kbd>l</kbd> address</span><span><kbd>~</kbd><kbd>~</kbd> panic</span></div>
       </div>
     </div>
   </div>

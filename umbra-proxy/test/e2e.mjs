@@ -109,15 +109,9 @@ const mint = async (url, mode = 'd', tab = null) => {
   } else ok('image bytes proxied same-origin', false, 'no img ref');
 
   /* ---- redirect policy ---- */
-  const defMint = await mint('https://httpbin.org/redirect-to?url=https%3A%2F%2Fexample.com%2F&status_code=302');
-  const defRes = await call(defMint.href + '/r');
-  ok('default policy follows a cross-host 3xx in-tab (never a browser redirect)',
-    defRes.status === 200 && /Example Domain/.test(defRes.text) && defRes.meta && defRes.meta.redirected === true,
-    'http ' + defRes.status + ' hops=' + (defRes.meta && defRes.meta.hops));
-  await call('/~umbra/policy', J({ follow: 'same-host' }));
   const held = await mint('https://httpbin.org/redirect-to?url=https%3A%2F%2Fexample.com%2F&status_code=302');
   const heldRes = await call(held.href + '/r');
-  ok('strict policy holds a cross-host 3xx as an in-tab capsule',
+  ok('cross-host 3xx becomes an in-tab capsule (never a browser redirect)',
     heldRes.status === 200 && /redirect held/i.test(heldRes.text) && heldRes.meta && heldRes.meta.kind === 'redirect-held',
     'http ' + heldRes.status + ' kind=' + (heldRes.meta && heldRes.meta.kind));
   ok('capsule carries the tab message payload (redirect target)', /type":"redirect"/.test(heldRes.text) && /umbra:\/\/example\.com/.test(heldRes.text));
@@ -136,8 +130,8 @@ const mint = async (url, mode = 'd', tab = null) => {
   /* policy: split every hop */
   await call('/~umbra/policy', J({ follow: 'none' }));
   const noneFollow = await call((await mint('https://httpbin.org/redirect/3')).href + '/c3');
-  ok('policy hold-every-hop holds the first hop too', /redirect held/i.test(noneFollow.text), 'http ' + noneFollow.status);
-  await call('/~umbra/policy', J({ follow: 'all' }));
+  ok('policy split-every-hop holds the first hop too', /redirect held/i.test(noneFollow.text), 'http ' + noneFollow.status);
+  await call('/~umbra/policy', J({ follow: 'same-host' }));
 
   /* subresource redirects must be followed, never turned into a capsule */
   const picsum = await mint('https://picsum.photos/400/300', 's');
@@ -167,9 +161,6 @@ const mint = async (url, mode = 'd', tab = null) => {
   const x = await mint('https://httpbin.org/get?via=xhr', 'x');
   const xhr = await call(x.href + '/g');
   ok('mode x byte-exact + meta exposed', xhr.status === 200 && /via/.test(xhr.text) && /x-umbra-meta/.test(xhr.headers.get('access-control-expose-headers') || ''), xhr.meta && xhr.meta.kind);
-  const xp = await mint('https://httpbin.org/post', 'x');
-  const xhrPost = await call(xp.href + '/p', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rpc: 'player' }) });
-  ok('mode x forwards method+body (JSON RPC survives)', xhrPost.status === 200 && /"rpc": "player"/.test(xhrPost.text), xhrPost.status);
   const f = await mint('https://httpbin.org/post', 'f');
   const post = await call(f.href + '/p', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'sent=hello+from+umbra' });
   ok('mode f forwards method+body', post.status === 200 && /hello from umbra/.test(post.text), (post.meta || {}).kind);
@@ -188,7 +179,6 @@ const mint = async (url, mode = 'd', tab = null) => {
   ok('json as document gets a readable viewer', /umbra viewer/.test(jsonDoc.text) && /as=document/.test(jsonDoc.text));
 
   /* ---- lab fixtures ---- */
-  await call('/~umbra/policy', J({ follow: 'same-host' }));
   for (const kind of ['redirect', 'samehost', 'meta', 'js', 'windowopen', 'image', 'video', 'form', 'frames', 'storage', 'xhr']) {
     const m = await mint('umbra://lab/' + kind);
     const l = await call(m.href + '/f');
@@ -201,7 +191,6 @@ const mint = async (url, mode = 'd', tab = null) => {
     if (kind === 'form') ok('lab form actions point at mode f', /action="\/~umbra\/f\//.test(l.text), (l.text.match(/action="[^"]{0,24}/g) || []).join(' '));
     if (kind === 'frames') ok('nested iframes proxied + tagged', /data-umbra-frame="1"/.test(l.text));
   }
-  await call('/~umbra/policy', J({ follow: 'all' }));
 
   /* ---- runtime mint from a frame (shim path) ---- */
   const b64 = Buffer.from('https://example.com/').toString('base64url');
