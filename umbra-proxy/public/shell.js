@@ -2,15 +2,22 @@
  * UMBRA SHELL
  * -----------
  * The only document the browser ever navigates. It owns the mini tab system,
- * mints Umbra wire addresses, and applies the redirect policy. It deliberately
- * never calls location.assign / pushState / replaceState, so the browser's
- * typed history keeps exactly one entry for a whole session.
+ * mints Umbra wire addresses, and lands every navigation — redirect chains
+ * included — in the tab that asked for it, the way a normal browser does.
+ * It deliberately never calls location.assign / pushState / replaceState, so
+ * the browser's typed history keeps exactly one entry for a whole session.
+ *
+ * Navigation contract: an address bar submit always ends in one of three
+ * states — the requested page, the final page of a followed chain, or an
+ * explicit error card with a retry. A tab never sits blank, stale, or on the
+ * wrong document without saying why.
  */
 (() => {
 'use strict';
 
 const PFX = '/~umbra/';
 const ORIGIN = location.origin;
+const WATCHDOG_MS = 25000;
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -45,7 +52,7 @@ for (const m of ['pushState', 'replaceState', 'back', 'forward', 'go']) {
 }
 
 /* ------------------------------------------------------------------- util */
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => String(s ?? '').replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmtBytes = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n > 1024 ? (n / 1024).toFixed(0) + ' KB' : n + ' B');
 const hostOf = (u) => {
   try { return new URL(String(u).replace(/^umbra:\/\//, 'https://')).hostname.replace(/^www\./, ''); }
@@ -58,7 +65,10 @@ async function api(pathname, opts = {}) {
   const r = await fetch(PFX + pathname, {
     credentials: 'same-origin',
     ...opts,
-    headers: { 'content-type': 'application/json', ...(opts.headers || {}) },
+    /* the boot-issued session rides the header too, so api calls survive
+       third-party cookie blocking (embedded previews, Safari, hardened
+       Chrome) that would otherwise 401 every mint after a healthy boot */
+    headers: { 'content-type': 'application/json', ...(S.session ? { 'x-umbra-session': S.session } : {}), ...(opts.headers || {}) },
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.detail || j.error || ('http ' + r.status));
@@ -104,8 +114,9 @@ async function newTab(startUrl, opts = {}) {
   }
   const t = {
     id: reg.tab, key: reg.key, url: startUrl || 'umbra://home/', title: 'Umbra',
-    hist: [], hi: -1, fav: '', held: 0, reqs: 0, mode: 'none',
+    hist: [], hi: -1, fav: '', held: 0, hops: [], reqs: 0, mode: 'none',
     frame: null, node: null, loading: false, native: null,
+    navSeq: 0, watchdog: null, fails: 0,
   };
   S.tabs.push(t);
   buildTabNode(t);
@@ -141,6 +152,19 @@ function buildTabNode(t) {
   pane.dataset.tab = t.id;
   t.frame = null;
   pane.appendChild(Object.assign(document.createElement('div'), { className: 'ovl' }));
+  const veil = document.createElement('div');
+  veil.className = 'veil';
+  veil.hidden = true;
+  veil.innerHTML =
+    `<div class="vload"><span class="ring"></span><span class="vmsg mono"></span></div>
+     <div class="verr" hidden><div class="verr-card">
+       <h3>That page never arrived</h3>
+       <p class="verr-msg"></p>
+       <div class="verr-row"><button data-a="retry" class="primary">Retry</button><button data-a="portal" class="ghost">Portal</button></div>
+     </div></div>`;
+  veil.querySelector('[data-a=retry]').onclick = () => goto(t, t.url, { push: false, force: true, fresh: true });
+  veil.querySelector('[data-a=portal]').onclick = () => goto(t, 'umbra://home/', { fresh: true });
+  pane.appendChild(veil);
   const bar = document.createElement('div');
   bar.className = 'bar';
   bar.innerHTML = `<span class="k"></span><span class="v"></span>
@@ -173,7 +197,13 @@ function mountFrame(t, spec) {
   f.setAttribute('referrerpolicy', 'no-referrer');
   f.setAttribute('fetchpriority', 'high');
   f.addEventListener('load', () => onFrameLoad(t));
-  f.addEventListener('error', () => { t.loading = false; renderTab(t); log('e', 'frame load error for ' + shortU(t.url)); });
+  f.addEventListener('error', () => {
+    t.loading = false;
+    clearWatchdog(t);
+    renderTab(t); renderStatus();
+    veil(t, 'error', 'The frame itself failed to load. Retry, or check the ledger for the wire error.');
+    log('e', 'frame load error for ' + shortU(t.url));
+  });
   if (spec.srcdoc != null) f.srcdoc = spec.srcdoc;
   else f.src = spec.src;
   const ovl = t.pane.querySelector('.ovl');
@@ -187,6 +217,8 @@ function mountFrame(t, spec) {
 
 function select(id) {
   S.active = id;
+  /* the empty state is only ever visible when there is nothing to show */
+  $('#empty').hidden = S.tabs.length !== 0;
   $$('.pane').forEach((p) => { p.style.display = 'none'; delete p.dataset.active; });
   const t = tab(id);
   if (t) { t.pane.style.display = 'block'; t.pane.dataset.active = '1'; }
@@ -197,7 +229,7 @@ function select(id) {
 }
 function selectSecond(id) {
   S.split = true;
-  $('#splitBtn').style.borderColor = 'rgba(79,209,179,.5)';
+  $('#splitBtn').style.borderColor = 'rgba(157,140,255,.55)';
   applySplit(id);
 }
 function applySplit(secondId) {
@@ -212,16 +244,11 @@ function applySplit(secondId) {
 const tab = (id) => S.tabs.find((t) => t.id === id);
 const active = () => tab(S.active);
 
-function backgroundOpen(url) {
-  /* a held redirect opens behind the tab you were reading: the target gets its
-     own tab, but it does not take the stage away from you */
-  return newTab(url, { background: true });
-}
-
 async function closeTab(id) {
   const t = tab(id);
   if (!t) return;
-  fetch(PFX + 'tab.close?t=' + encodeURIComponent(id), { credentials: 'same-origin' }).catch(() => {});
+  clearWatchdog(t);
+  fetch(PFX + 'tab.close?t=' + encodeURIComponent(id) + (S.session ? '&sid=' + encodeURIComponent(S.session) : ''), { credentials: 'same-origin' }).catch(() => {});
   t.node.remove();
   t.pane.remove();
   try { t.frame && (t.frame.src = 'about:blank'); } catch {}
@@ -231,15 +258,55 @@ async function closeTab(id) {
   log('i', 'tab closed; frame destroyed');
 }
 
+/* ------------------------------------------- veil + watchdog: never blank */
+function veil(t, mode, msg) {
+  const v = t.pane && t.pane.querySelector('.veil');
+  if (!v) return;
+  if (!mode) { v.hidden = true; return; }
+  v.hidden = false;
+  v.classList.toggle('err', mode === 'error');
+  v.querySelector('.vload').hidden = mode !== 'load';
+  const e = v.querySelector('.verr');
+  e.hidden = mode !== 'error';
+  if (mode === 'load') v.querySelector('.vmsg').textContent = msg || '';
+  if (mode === 'error') v.querySelector('.verr-msg').textContent = msg || '';
+}
+function armWatchdog(t, what) {
+  clearWatchdog(t);
+  const seq = ++t.navSeq;
+  t.watchdog = setTimeout(() => {
+    if (t.navSeq !== seq || !S.tabs.includes(t)) return;
+    t.loading = false;
+    renderTab(t); renderStatus();
+    /* a slow page with paint on screen is not a failure — only veil the tab
+       when the frame has nothing to show, so we never cover a live page */
+    let painted = false;
+    try {
+      const txt = t.frame && t.frame.contentDocument && t.frame.contentDocument.body;
+      painted = !!(txt && (txt.innerText || '').trim());
+    } catch {}
+    if (!painted) veil(t, 'error', `No answer within ${Math.round(WATCHDOG_MS / 1000)}s — the site or the wire stalled. Nothing was added to your browser history; retry when ready.`);
+    else veil(t, null);
+    log('e', 'watchdog: ' + shortU(t.url) + ' never settled (' + what + ')');
+  }, WATCHDOG_MS);
+}
+function clearWatchdog(t) { if (t.watchdog) { clearTimeout(t.watchdog); t.watchdog = null; } }
+
 /* ------------------------------------------------------------- navigation */
 async function goto(t, url, opts = {}) {
   if (!t) return;
   const push = opts.push !== false;
   if (!url) return;
   t.native = null;
+  t.pendingNav = null;
   let j;
   try { j = await mint(url, 'd', t.id); }
-  catch (e) { log('e', 'mint refused for ' + shortU(url) + ' — ' + e.message); toast('Umbra refused that address', 2600, 'warn'); return; }
+  catch (e) {
+    log('e', 'mint refused for ' + shortU(url) + ' — ' + e.message);
+    toast('Umbra refused that address', 2600, 'warn');
+    veil(t, 'error', 'Umbra refused that address: ' + e.message);
+    return;
+  }
   t.url = j.umbra;
   if (push) {
     t.hist = t.hist.slice(0, t.hi + 1);
@@ -249,12 +316,32 @@ async function goto(t, url, opts = {}) {
   t.href = j.href;
   t.loading = true;
   t.mode = 'wire';
+  t.hops = [];
+  /* tripwire trips accumulate across shell-driven re-navigations (revert and
+     adoption below) so a hostile page terminates at the error veil instead of
+     looping; only fresh user intent clears the count */
+  if (opts.fresh) t.fails = 0;
   renderTab(t);
+  veil(t, 'load', shortU(j.umbra));
+  armWatchdog(t, 'wire document');
   mountFrame(t, { src: ORIGIN + j.href });
   fetchFavicon(t);
   log('d', 'GET ' + t.url);
   renderAddr();
   renderStatus();
+}
+
+/* Reinterpret a same-origin, off-wire landing as a logical navigation: the
+   page meant `<path>` for its own site and the shell origin just happened to
+   be the base it resolved against. Null when there is nothing sane to adopt
+   (foreign landing, virtual umbra host, malformed tail). */
+function adoptOffWire(t, where) {
+  if (!where || !where.startsWith(ORIGIN + '/')) return null;
+  const m = /^umbra:\/\/([^/]+)/.exec(t.url || '');
+  if (!m || /^(home|portal|help|stats|protocol|lab|search)$/.test(m[1])) return null;
+  const tail = where.slice(ORIGIN.length);
+  if (!tail.startsWith('/')) return null;
+  return 'umbra://' + m[1] + tail;
 }
 
 function onFrameLoad(t) {
@@ -263,33 +350,77 @@ function onFrameLoad(t) {
     const w = t.frame.contentWindow;
     where = w && w.location ? w.location.href : null;
   } catch { where = null; }
-  const offOrigin = where === null && t.mode === 'wire';
-  if (t.mode === 'wire' && where && !where.startsWith(ORIGIN + PFX)) {
-    // a script sent the frame somewhere Umbra does not control: undo it
-    t.escapes = (t.escapes || 0) + 1;
-    log('r', 'off-Umbra navigation attempted — frame reverted to ' + shortU(t.url));
-    toast('a script tried to move this tab off Umbra. <b>reverted</b> and opened in a new tab instead', 4200, 'warn');
-    const target = t.pendingNav || t.url;
+  if (t.mode === 'srcdoc') {
+    /* a POST answer mounted verbatim: its location reads about:blank, which
+       is expected — not an escape. Same-origin by construction (the sandbox
+       carries allow-same-origin), so sync straight from it. */
+    t.mode = 'wire';
+    t.loading = false;
     t.pendingNav = null;
-    goto(t, target, { push: false, force: true });
+    clearWatchdog(t);
+    veil(t, null);
+    renderTab(t);
+    syncFromFrame(t);
     return;
   }
-  if (offOrigin) {
+  const offOrigin = where === null && t.mode === 'wire';
+  const offWire = t.mode === 'wire' && where && !where.startsWith(ORIGIN + PFX);
+  if (offWire || offOrigin) {
+    if (t.pendingNav) {
+      /* a shim-sanctioned navigation is already in flight toward a fresh
+         frame — this load is the old frame's last gasp, not an escape */
+      t.pendingNav = null;
+      return;
+    }
+    t.fails = (t.fails || 0) + 1;
+    if (offWire && t.fails <= 3) {
+      /* a readable same-origin landing off the wire is an unhookable native
+         navigation (the location-href setter aimed at '/results…': the
+         YouTube search pattern), not an attack: adopt the path onto the
+         tab's logical host the way a browser would just go there. The native
+         hop already cost one joint-history entry — unavoidable, already
+         happened, ledgered below. */
+      const adopted = adoptOffWire(t, where);
+      if (adopted && adopted !== t.url) {
+        log('s', 'adopted same-origin hop → ' + shortU(adopted));
+        t.pendingNav = null;
+        goto(t, adopted, { push: true });
+        return;
+      }
+    }
+    if (t.fails >= 2) {
+      /* reverting again would loop forever (dead wire, hostile page): say so */
+      t.loading = false;
+      t.pendingNav = null;
+      clearWatchdog(t);
+      renderTab(t); renderStatus();
+      veil(t, 'error', 'This page kept leaving Umbra’s frame, so the tab stopped following it. Retry to reload it cleanly.');
+      log('e', 'frame would not stay on the wire for ' + shortU(t.url) + ' — holding with an error, not looping');
+      return;
+    }
     t.escapes = (t.escapes || 0) + 1;
-    log('r', 'frame went off-origin (unreadable, cross-origin). reverted.');
-    toast('the page tried to leave Umbra. reverted, nothing entered your browser history', 4200, 'warn');
+    if (offWire) {
+      log('r', 'off-Umbra navigation attempted — frame reverted to ' + shortU(t.url));
+      toast('a script tried to move this tab off Umbra. <b>reverted</b>', 4200, 'warn');
+    } else {
+      log('r', 'frame went off-origin (unreadable, cross-origin). reverted.');
+      toast('the page tried to leave Umbra. reverted, nothing entered your browser history', 4200, 'warn');
+    }
+    t.pendingNav = null;
     goto(t, t.url, { push: false, force: true });
     return;
   }
   t.loading = false;
+  t.pendingNav = null;
+  clearWatchdog(t);
+  veil(t, null);
   renderTab(t);
   syncFromFrame(t);
 }
 
-/** pull the last wire response's Umbra-Meta out of the frame's performance log */
 /**
  * After every load, pull the truth out of the frame: which logical address it
- * ended up on (a page may have navigated itself), what it wants to be called,
+ * ended up on (a chain may have landed elsewhere), what it wants to be called,
  * how many bytes it cost, and whether the shim installed every hook. The frame
  * is same-origin by construction, so this is a plain property read.
  */
@@ -306,6 +437,7 @@ function syncFromFrame(t) {
         t.hi = t.hist.length - 1;
       }
     }
+    if (Array.isArray(w.UMBRA && w.UMBRA.hops)) t.hops = w.UMBRA.hops;
     if (d.title) t.title = d.title.trim().slice(0, 120);
     const g = w.__UMBRA_DIAG__;
     if (g) {
@@ -314,6 +446,7 @@ function syncFromFrame(t) {
     }
     const nav = (w.performance && w.performance.getEntriesByType('navigation') || [])[0];
     if (nav) t.bytesOut = Math.round(nav.encodedBodySize || 0);
+    t.fails = 0;
   } catch (e) {
     log('e', 'frame sync failed: ' + (e.message || e));
   }
@@ -330,7 +463,7 @@ addEventListener('message', async (ev) => {
   switch (d.type) {
     case 'nav': {
       if (!t) return;
-      if (d.wire && !d.url) return gotoWire(t, d.wire);
+      if (d.wire && !d.url) { t.fails = 0; return gotoWire(t, d.wire); }
       t.pendingNav = d.url;
       /* a proxied SPA calling history.pushState is an in-place replace, never
          a new entry: the umbra tab keeps its own stack instead */
@@ -352,22 +485,48 @@ addEventListener('message', async (ev) => {
       await newTab(url);
       break;
     }
+    case 'render': {
+      /* a POST answer fetched by the shim: mount the server bytes verbatim in
+         a fresh frame, so the response renders with no joint-history entry —
+         exactly like a navigation, minus the navigation. Too big for srcdoc
+         degrades to a plain GET of the target instead of breaking. */
+      if (!t) return;
+      const html = String(d.html || '');
+      if (!html) return;
+      if (html.length > 2000000) { if (d.url) await goto(t, d.url, { push: true }); return; }
+      if (d.url) {
+        t.url = d.url;
+        if (t.hist[t.hi] !== t.url) { t.hist = t.hist.slice(0, t.hi + 1); t.hist.push(t.url); t.hi = t.hist.length - 1; }
+      }
+      if (d.wire) t.href = d.wire;
+      t.mode = 'srcdoc';
+      t.loading = true;
+      t.pendingNav = null;
+      renderTab(t);
+      veil(t, 'load', shortU(t.url));
+      armWatchdog(t, 'posted document');
+      mountFrame(t, { srcdoc: html });
+      fetchFavicon(t);
+      log('d', 'POST ' + t.url);
+      renderAddr();
+      renderStatus();
+      break;
+    }
     case 'redirect': {
+      /* redirects land where a browser would put them: the same tab, which
+         ends on the final document with the chain in the ledger */
       const target = d.url;
       if (!target || !t) return;
       t.held++;
-      log('r', `redirect held: ${shortU(d.from || t.url)} → ${shortU(target)} (${d.status}) — split into its own background tab`);
-      toast(`redirect to <b>${esc(hostOf(target))}</b> was split into its own tab`, 4200);
-      await backgroundOpen(target);
-      const back = t.hist[t.hi - 1] || t.url;
-      if (d.holdHere) { /* capsule stays visible; nothing to restore */ }
-      else goto(t, back, { push: false, force: true });
+      log('r', `redirect ${shortU(d.from || t.url)} → ${shortU(target)} (${d.status || '3xx'}) — followed in this tab`);
+      toast(`redirect → <b>${esc(hostOf(target))}</b>, followed in this tab`, 2600);
+      await goto(t, target, { push: true });
       renderTab(t);
       break;
     }
     case 'restore': {
       if (!t) return;
-      goto(t, t.hist[t.hi] || t.url, { push: false, force: true });
+      goto(t, t.hist[t.hi] || t.url, { push: false, force: true, fresh: true });
       break;
     }
     case 'title': {
@@ -379,8 +538,11 @@ addEventListener('message', async (ev) => {
     }
     case 'ready': {
       if (!t) return;
-      if (d.url && d.url !== t.url) { t.url = d.url; renderAddr(); }
-      renderTab(t);
+      if (d.url && d.url !== t.url) { t.url = d.url; }
+      t.loading = false;
+      clearWatchdog(t);
+      veil(t, null);
+      renderTab(t); renderAddr(); renderStatus();
       break;
     }
     case 'history': {
@@ -407,23 +569,27 @@ function fetchFavicon(t) {
    tab strip like everything else and never touch browser history */
 async function runSearch(t, q) {
   if (!t) t = await newTab();
-  return gotoWire(t, PFX + 'search?q=' + encodeURIComponent(q), 'umbra://search/?q=' + encodeURIComponent(q));
+  t.fails = 0;
+  return gotoWire(t, PFX + 'search?q=' + encodeURIComponent(q) + (S.session ? '&sid=' + encodeURIComponent(S.session) : ''), 'umbra://search/?q=' + encodeURIComponent(q));
 }
 
-async function gotoWire(t, wirePath, label) {
+async function gotoWire(t, wirePath, label, fresh) {
   const abs = wirePath.startsWith('umbra://') ? null : wirePath;
-  if (!abs) return goto(t, wirePath);
+  if (!abs) return goto(t, wirePath, { fresh });
   t.url = label || t.url;
   t.href = abs;
   t.mode = 'wire';
   t.loading = true;
+  t.hops = [];
+  if (fresh) t.fails = 0;
+  t.pendingNav = null;
   if (t.hist[t.hi] !== t.url) { t.hist = t.hist.slice(0, t.hi + 1); t.hist.push(t.url); t.hi = t.hist.length - 1; }
   renderTab(t); renderAddr();
+  veil(t, 'load', shortU(t.url));
+  armWatchdog(t, 'wire document');
   mountFrame(t, { src: ORIGIN + abs });
   log('d', 'GET ' + t.url + ' (wire)');
 }
-
-function closeIfPortalless() {}
 
 /* ------------------------------------------------------------- rendering */
 function renderStrip() {
@@ -449,19 +615,24 @@ function renderTab(t) {
   if (!t || !t.pane) return;
   t.pane.classList.toggle('loading', !!t.loading);
   $('.bar .k', t.pane).textContent = t.loading ? 'loading' : t.mode === 'srcdoc' ? 'native umbra doc' : 'proxied';
-  $('.bar .v', t.pane).textContent = ' · ' + shortU(t.url) + (t.held ? ` · ${t.held} redirect${t.held > 1 ? 's' : ''} held` : '') + (t.escapes ? ` · ${t.escapes} escape blocked` : '');
+  $('.bar .v', t.pane).textContent = ' · ' + shortU(t.url) + (t.held ? ` · ${t.held} redirect${t.held > 1 ? 's' : ''} followed` : '') + (t.escapes ? ` · ${t.escapes} escape blocked` : '');
   renderStrip();
 }
 function renderAddr() {
   const t = active();
   const a = $('#addr');
-  /* do not clobber mid-typing, but do resync once the value the user submitted
-     has been resolved to a canonical umbra address */
-  const focusedButSubmitted = document.activeElement === a && a.value === a.dataset.submitted;
-  if (document.activeElement !== a || focusedButSubmitted) a.value = t ? shortU(t.url) : '';
+  /* never clobber mid-typing, but always resync once the submitted value has
+     been resolved: the bar is showing the user's keystrokes only while they
+     differ from the last value the shell itself painted (or accepted) */
+  const userTyping = document.activeElement === a && a.value !== (a.dataset.rendered || '');
+  if (!userTyping) {
+    a.value = t ? shortU(t.url) : '';
+    a.dataset.rendered = a.value;
+  }
   $('#back').disabled = !t || t.hi <= 0;
   $('#fwd').disabled = !t || t.hi >= t.hist.length - 1;
-  $('#hint').textContent = t ? (t.held ? t.held + ' held redirect(s)' : '') : '';
+  const hops = t && t.hops && t.hops.length > 1 ? t.hops.length - 1 : (t && t.held) || 0;
+  $('#hint').textContent = hops ? hops + ' redirect' + (hops > 1 ? 's' : '') + ' followed' : '';
 }
 function renderStatus() {
   const t = active();
@@ -470,6 +641,7 @@ function renderStatus() {
   $('#stRight').textContent =
     `${S.tabs.length} umbra tab${S.tabs.length === 1 ? '' : 's'} · ` +
     `${S.stats.reqs || 0} wire reqs · ${fmtBytes(S.stats.bytes || 0)} · browser history: 1 entry`;
+  $('#progress').classList.toggle('on', S.tabs.some((x) => x.loading));
 }
 function renderLog() {
   const b = $('#logBody');
@@ -512,13 +684,14 @@ async function interpret(text, inNewTab) {
     return runSearch(t, s);
   }
   if (inNewTab) await newTab(url);
-  else { const t = active() || await newTab(); await goto(t, url); }
+  else { const t = active() || await newTab(); await goto(t, url, { fresh: true }); }
 }
 
 async function panic() {
   log('r', 'PANIC — tabs, cookie jar and ledger destroyed');
   S.tabs.forEach((t) => {
     try {
+      clearWatchdog(t);
       if (t.frame) { t.frame.src = 'about:blank'; t.frame.srcdoc = '<html></html>'; t.frame.remove(); }
     } catch {}
     t.node?.remove();
@@ -546,16 +719,19 @@ async function pollStats() {
 /* ------------------------------------------------------------- wiring */
 function wireUI() {
   $('#newtab').onclick = () => newTab();
-  $('#homeBtn').onclick = () => { const t = active(); if (t) goto(t, 'umbra://home/', { force: true }); };
-  $('#back').onclick = () => { const t = active(); if (t && t.hi > 0) { t.hi--; goto(t, t.hist[t.hi], { push: false, force: true }); } };
-  $('#fwd').onclick = () => { const t = active(); if (t && t.hi < t.hist.length - 1) { t.hi++; goto(t, t.hist[t.hi], { push: false, force: true }); } };
-  $('#reload').onclick = () => { const t = active(); if (t) goto(t, t.url, { push: false, force: true }); };
-  $('#goBtn').onclick = () => { const a = $('#addr'); a.dataset.submitted = a.value; interpret(a.value, false); };
-  $('#goNew').onclick = () => { const a = $('#addr'); a.dataset.submitted = a.value; interpret(a.value, true); };
+  $('#homeBtn').onclick = () => { const t = active(); if (t) goto(t, 'umbra://home/', { force: true, fresh: true }); };
+  $('#back').onclick = () => { const t = active(); if (t && t.hi > 0) { t.hi--; goto(t, t.hist[t.hi], { push: false, force: true, fresh: true }); } };
+  $('#fwd').onclick = () => { const t = active(); if (t && t.hi < t.hist.length - 1) { t.hi++; goto(t, t.hist[t.hi], { push: false, force: true, fresh: true }); } };
+  $('#reload').onclick = () => { const t = active(); if (t) goto(t, t.url, { push: false, force: true, fresh: true }); };
+  $('#goBtn').onclick = () => { const a = $('#addr'); a.dataset.rendered = a.value; interpret(a.value, false); };
+  $('#goNew').onclick = () => { const a = $('#addr'); a.dataset.rendered = a.value; interpret(a.value, true); };
   $('#addr').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      e.target.dataset.submitted = e.target.value;
+      /* the submitted text becomes the baseline: until the user types again,
+         the bar tracks the tab (canonical address, then the final address of
+         any redirect chain) instead of freezing on the keystrokes */
+      e.target.dataset.rendered = e.target.value;
       const v = e.target.value;
       interpret(v, e.ctrlKey || e.metaKey);
     }
@@ -569,7 +745,7 @@ function wireUI() {
   });
   $('#splitBtn').onclick = () => {
     S.split = !S.split;
-    $('#splitBtn').style.borderColor = S.split ? 'rgba(79,209,179,.5)' : '';
+    $('#splitBtn').style.borderColor = S.split ? 'rgba(157,140,255,.55)' : '';
     if (S.split) applySplit(); else { const t = active(); $$('.pane').forEach((p) => { p.style.display = p.dataset.tab === (t && t.id) ? 'block' : 'none'; }); }
   };
   $('#logToggle').onclick = () => { $('#log').hidden = !$('#log').hidden; if (!$('#log').hidden) { pollStats(); } };
@@ -614,7 +790,7 @@ let panicCount = 0, panicTimer = 0;
    suite reach the shell's internals (state is intentionally not persisted) */
 window.__UMBRA__ = {
   state: S,
-  get tabs() { return S.tabs.map((t) => ({ id: t.id, url: t.url, title: t.title, mode: t.mode, shim: t.shim, held: t.held })); },
+  get tabs() { return S.tabs.map((t) => ({ id: t.id, url: t.url, title: t.title, mode: t.mode, shim: t.shim, held: t.held, hops: (t.hops || []).length })); },
   go: (u, id) => goto(tab(id || S.active) || active(), u),
   open: (u) => newTab(u),
   post: (msg) => dispatchEvent(new MessageEvent('message', { data: msg, origin: ORIGIN })),

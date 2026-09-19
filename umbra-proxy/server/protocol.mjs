@@ -167,6 +167,16 @@ export function newTab() {
 export const COOKIE_NAME = 'umbra_s';
 
 export function readSession(req) {
+  /* Explicit first: third-party cookie blocking (an embedded preview, Safari,
+     hardened Chrome) silently drops the cookie, so the shell also sends its
+     boot-issued session as a header, and navigation-capable URLs (frames,
+     images, sockets — anything that cannot set headers) carry it as ?sid=. */
+  const h = req.headers['x-umbra-session'];
+  if (h && /^[0-9a-f]{20,64}$/i.test(String(h).trim())) return String(h).trim();
+  try {
+    const q = new URL(req.url || '/', 'http://x').searchParams.get('sid');
+    if (q && /^[0-9a-f]{20,64}$/i.test(q)) return q;
+  } catch {}
   const raw = req.headers.cookie || '';
   for (const part of raw.split(/;\s*/)) {
     const [k, ...rest] = part.split('=');

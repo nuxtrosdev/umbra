@@ -44,7 +44,10 @@ function session(id) {
       gen: crypto.randomBytes(6).toString('hex'),
       cookieJar: new CookieJar(),
       tabs: new Map(),
-      policy: { follow: 'same-host', referrer: 'origin', ephemeral: 1 },
+      /* browser-like by default: redirects are followed transparently and the
+         tab lands on the final document. Stricter holds ('same-host', 'none')
+         are opt-in per session and pause on a review capsule instead. */
+      policy: { follow: 'all', referrer: 'origin', ephemeral: 1 },
       created: Date.now(),
       bytes: 0,
       reqs: 0,
@@ -165,20 +168,20 @@ main{max-width:720px;width:100%;background:rgba(19,24,34,.86);border:1px solid r
  border-radius:16px;padding:24px 26px;box-shadow:0 30px 70px -30px #000}
 h1{font-size:17px;margin:0 0 10px}h2{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#93a4bb;margin:20px 0 8px}
 .kicker{font:10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.16em;text-transform:uppercase;
- color:#8fd6c8;background:rgba(60,190,160,.11);border:1px solid rgba(60,190,160,.28);padding:6px 9px;
+ color:#a9ecff;background:rgba(157,140,255,.11);border:1px solid rgba(157,140,255,.28);padding:6px 9px;
  border-radius:99px;display:inline-block;margin-bottom:14px}
 u{display:block;text-decoration:none;font-family:ui-monospace,Menlo,monospace;font-size:12px;
  background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 12px;
- color:#a8e3d6;overflow-wrap:anywhere;margin:10px 0;word-break:break-all}
+ color:#a9ecff;overflow-wrap:anywhere;margin:10px 0;word-break:break-all}
 .row{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px;align-items:center}
 button,a.btn{font:inherit;font-size:13px;cursor:pointer;border-radius:10px;padding:9px 14px;
  border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#eaf1f8;text-decoration:none}
 button:hover,a.btn:hover{background:rgba(255,255,255,.12)}
-button.go{background:linear-gradient(180deg,#2fbf9f,#1f9a7f);border-color:#28b094;color:#04140f;font-weight:600}
+button.go{background:linear-gradient(180deg,#b3a8ff,#7c6cf0);border-color:#8f80f5;color:#0a0618;font-weight:600}
 .warn{color:#ffcf8b}.muted{color:#8b9bb4}
 pre{background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:12px;
- overflow:auto;font-size:12px;color:#bfd4e6;max-height:46vh}
-code{font:12px ui-monospace,monospace;background:rgba(255,255,255,.07);padding:1px 5px;border-radius:5px;color:#bfe9dd}
+ overflow:auto;font-size:12px;color:#bccbe0;max-height:46vh}
+code{font:12px ui-monospace,monospace;background:rgba(255,255,255,.07);padding:1px 5px;border-radius:5px;color:#c9c1ff}
 ul{padding-left:19px}li{margin:5px 0}table{border-collapse:collapse;width:100%;font-size:13px}
 td,th{border-bottom:1px solid rgba(255,255,255,.07);padding:6px 8px;text-align:left;vertical-align:top}
 th{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#8fa2ba}
@@ -203,7 +206,7 @@ var msg=${msg};
 function root(){try{var t=window.top;void t.location.href;return t}catch(e){try{return window.parent}catch(x){return null}}}
 function send(m){var t=root();if(t&&t.__UMBRA_SHELL__){try{t.postMessage(m,'*');return 1}catch(e){}}return 0}
 window.__umbraPost=function(type,p){return send(Object.assign({},msg,{type:type},p||{}))};
-send(msg);
+${kind === 'redirect' ? '/* a held hop waits for the reader: follow/open/keep above choose explicitly */' : 'send(msg);'}
 })();</script></body></html>`;
 }
 
@@ -241,16 +244,17 @@ function holdRedirect(ctx, res, from, to, status, mode, chain) {
   if (sameHost && policy === 'none' && false) return false;
 
   ctx.sessionObj && ctx.sessionObj.held++;
-  const tok = encodeToken({ u: to, t: ctx.tabId, s: ctx.session, m: 'd' });
-  const body = `<div class="kicker">redirect held in tab</div>
+  const tok = encodeToken({ u: to, t: ctx.tabId, s: ctx.session, g: ctx.gen, m: 'd' });
+  const followWire = `${PFX}d/${tok}/followed.html`;
+  const body = `<div class="kicker">redirect held for review</div>
 <h1>${esc(displayHost(from))} answered ${esc(status)} toward ${esc(displayHost(to))}</h1>
-<p class="muted">Umbra never lets a redirect move the page you are looking at. The destination was opened as
-its own tab in the Umbra strip; this frame is untouched. Your browser history gained nothing.</p>
+<p class="muted">Your redirect policy holds cross-host hops instead of following them. Nothing has moved yet —
+not this frame, not your place in the tab strip, and nothing in your browser history. Choose where this hop lands.</p>
 <u>${esc(toUmbra(from))} &nbsp;&#8594;&nbsp; ${esc(toUmbra(to))}</u>
 <h2>held response</h2>
 <pre>${esc(status + ' ' + (httpReason(status)))}</pre>
 <div class="row">
-  <a class="btn" href="${PFX}d/${tok}/followed.html">load it in THIS tab anyway</a>
+  <a class="btn" href="${followWire}" onclick="__umbraPost('nav',{wire:this.getAttribute('href')});return false">load it in THIS tab anyway</a>
   <button class="go" onclick="__umbraPost('open',{url:${ji(toUmbra(to))}})">open in a new umbra tab</button>
   <button onclick="__umbraPost('restore',{})">keep this page</button>
 </div>
@@ -323,8 +327,10 @@ function localDoc(ctx, html, baseUrl, extraHead = '', logical = '') {
     tab: ctx.tabId,
     frame: 'top',
     key: ctx.key,
+    session: ctx.session || '',
     origin: ctx.origin,
     ephemeral: ctx.policy.ephemeral ? 1 : 0,
+    hops: [],
   };
   let out = injectShim(rewritten, ji(ctxObj), PFX + 'shim.js');
   out = out.replace(/<head[^>]*>/i, (m) => m + '<meta name="referrer" content="no-referrer"><meta name="umbra" content="local">');
@@ -389,8 +395,16 @@ async function serve(ctx, req, res, opts = {}) {
       which === 'home' ? 'umbra://home/' : which === 'help' ? 'umbra://protocol' : 'umbra://stats'));
   }
   const chain = [];
-  const maxHops = doc ? (ctx.policy.follow === 'all' ? DOC_HOPS : 1) : SUB_HOPS;
+  /* The hop cap is loop protection only — hold-vs-follow is decided per hop by
+     the policy in holdRedirect. Capping same-host chains at 1 would 508 any
+     site whose canonicalisation takes two hops (http→https→www is common). */
+  const maxHops = doc ? DOC_HOPS : SUB_HOPS;
   let up = null;
+  /* API fidelity: XHR/fetch keep their method and body upstream (innertube
+     RPCs are POSTs; dropping the body breaks every SPA that talks JSON). */
+  let upMethod = opts.method || (mode === 'f' ? 'POST' : 'GET');
+  let upBody = opts.body || null;
+  let upCt = opts.ct || null;
 
   for (let hop = 0; hop <= maxHops; hop++) {
     const headers = {
@@ -417,21 +431,31 @@ async function serve(ctx, req, res, opts = {}) {
     }
     if (mode === 's') headers.referer = headers.referer || (() => { try { return new URL(url).origin + '/'; } catch { return undefined; } })();
     if (opts.range) headers.range = opts.range;
-    if (mode === 'f') {
-      headers['content-type'] = opts.ct || 'application/x-www-form-urlencoded';
-      headers['content-length'] = String(opts.body ? opts.body.length : 0);
+    if (upBody) {
+      headers['content-type'] = upCt || 'application/x-www-form-urlencoded';
+      headers['content-length'] = String(upBody.length);
     }
 
     for (const k of Object.keys(headers)) if (headers[k] == null || headers[k] === '') delete headers[k];
 
     try {
       up = await upstream(url, {
-        method: mode === 'f' ? 'POST' : 'GET',
+        method: upMethod,
         headers,
-        body: mode === 'f' ? opts.body : null,
+        body: upBody,
         stream: mode === 'm' || mode === 'r' || (doc === false && !['css', 'html', 'js', 'text'].includes(SNIFF(guessType(url)))),
       });
     } catch (e) {
+      /* https-first with a loopback fallback (browsers do the same when https
+         fails): umbra:// means https, but loopback services are usually plain
+         http. Scoped to loopback on the first hop only, so nothing on the
+         open web can ever be downgraded by it. */
+      if (hop === 0 && /^https:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\//i.test(url)) {
+        const httpUrl = url.replace(/^https:\/\//i, 'http://');
+        chain.push({ status: 0, url, location: httpUrl });
+        url = httpUrl;
+        continue;
+      }
       return send(res, 502, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'error', url, error: String(e.message || e) }) },
         errPage(ctx, url, 'upstream refused: ' + (e.message || e), chain));
     }
@@ -445,6 +469,11 @@ async function serve(ctx, req, res, opts = {}) {
       up.res.resume();
       if (!next) return send(res, 502, {}, errPage(ctx, up.url, 'unparseable redirect target: ' + String(loc).slice(0, 120), chain));
       if (holdRedirect(ctx, res, up.url, next, st, mode, chain)) return;
+      /* 301/302 downgrade POST to GET, 303 downgrades everything but HEAD;
+         307/308 replay the body untouched — exactly what fetch would do */
+      if (((st === 301 || st === 302) && upMethod === 'POST') || (st === 303 && upMethod !== 'HEAD')) {
+        upMethod = 'GET'; upBody = null; upCt = null;
+      }
       url = next;
       if (hop === maxHops) return send(res, 508, {}, errPage(ctx, url, 'redirect limit reached', chain));
       continue;
@@ -559,8 +588,14 @@ ${/json/.test(ct) ? '<script>try{var j=JSON.parse(document.querySelector("pre").
     tab: ctx.tabId,
     frame: 'top',
     key: ctx.key,
+    session: ctx.session || '',
     origin: ctx.origin,
     ephemeral: ctx.policy.ephemeral ? 1 : 0,
+    /* the redirect chain that landed here, oldest hop first — the shell shows
+       the final address in the bar and the hop count beside it. Synthetic
+       status-0 entries (https→http loopback fallback) are wire diagnostics,
+       not redirects, so they stay in the meta header but not in this list */
+    hops: chain.filter((c) => c.status !== 0).map((c) => ({ status: c.status, url: toUmbra(c.url) })),
   };
   docOut = injectShim(docOut, ji(ctxObj), PFX + 'shim.js');
   docOut = docOut.replace(/<head[^>]*>/i, (m) => m + '<meta name="referrer" content="no-referrer"><meta name="umbra" content="v1">');
@@ -586,7 +621,7 @@ function ytPill(ctx, vid) {
  border:1px solid rgba(143,214,200,.35);border-radius:999px;padding:8px 10px 8px 12px;box-shadow:0 14px 34px -14px #000">
  <span style="letter-spacing:.12em;text-transform:uppercase;font-size:10px;color:#8fd6c8">umbra</span>
  <a href="${PFX}c/${tok}/player.html" style="color:#eaf7f2;text-decoration:none;border:1px solid rgba(255,255,255,.18);
-  border-radius:999px;padding:6px 11px">play in the umbra player</button></a>
+  border-radius:999px;padding:6px 11px">play in the umbra player</a>
  <button onclick="this.parentNode.remove()" style="all:unset;cursor:pointer;color:#93a4bb;padding:0 4px" aria-label="dismiss">&times;</button></div>`;
 }
 
@@ -607,37 +642,55 @@ function localAddressToUrl(raw) {
   }
   return null;
 }
-function localHrefFor(raw, tabId) {
+function localHrefFor(raw, tabId, sid) {
   const u = localAddressToUrl(raw);
   if (!u) return null;
+  /* unsigned local URLs carry the session explicitly: a frame navigation
+     cannot set headers, and its cookies may be blocked as third-party. */
+  const tail = '?t=' + encodeURIComponent(tabId) + (sid ? '&sid=' + encodeURIComponent(sid) : '');
   if (u.startsWith('https://lab.umbra/')) {
     const key = /^https:\/\/lab\.umbra\/([\w-]+)/.exec(u)[1];
-    return PFX + 'lab/' + key + '?t=' + encodeURIComponent(tabId);
+    return PFX + 'lab/' + key + tail;
   }
   if (u.startsWith('https://portal.umbra/search')) {
     const qs = u.slice(u.indexOf('?'));
-    return PFX + 'search' + qs + '&format=html&t=' + encodeURIComponent(tabId);
+    return PFX + 'search' + qs + '&format=html&t=' + encodeURIComponent(tabId) + (sid ? '&sid=' + encodeURIComponent(sid) : '');
   }
   const which = /help/.test(u) ? 'help' : /stats/.test(u) ? 'stats' : 'home';
-  return PFX + 'doc/' + which + '?t=' + encodeURIComponent(tabId);
+  return PFX + 'doc/' + which + tail;
 }
 
 /* ======================================================== lab fixtures = */
 /* Deterministic probes so every guarantee in the spec can be exercised
    without depending on a third party changing its behaviour. */
 const LAB = {
-  redirect: Object.assign(() => `<body><div class="kicker">fixture · held 302</div>
+  redirect: Object.assign(() => `<body><div class="kicker">fixture · synthetic 302</div>
 <h1>This document answered with a redirect that was never sent to you</h1>
-<p class="muted">Umbra synthesised <code>302 -&gt; umbra://example.com/</code> here. The router applied the
-policy, held the hop, and opened the target as its own tab instead of moving this frame.</p>
+<p class="muted">Umbra synthesised <code>302 -&gt; umbra://example.com/</code> here and ran it through the
+same policy code as a real upstream hop: strict policies hold it for review, the default
+follows it the way a browser would.</p>
 <pre>GET umbra://lab/redirect
-&lt; 302 Found   Location: umbra://example.com/
-* policy split cross-host -&gt; capsule in this tab + new tab for the target</pre></body>`,
+&lt; 302 Found   Location: umbra://example.com/</pre></body>`,
     { direct: (ctx, res) => {
         const to = 'https://example.com/';
         const from = 'https://lab.umbra/redirect';
         // pretend upstream answered 302; let the shared policy code decide
-        holdRedirect({ ...ctx, policy: { ...ctx.policy, follow: ctx.policy.follow } }, res, from, to, 302, 'd', [{ status: 302, url: from, location: to }]);
+        const stayed = holdRedirect({ ...ctx, policy: { ...ctx.policy, follow: ctx.policy.follow } }, res, from, to, 302, 'd', [{ status: 302, url: from, location: to }]);
+        if (!stayed) {
+          /* the policy says follow: land on the synthetic target the way the
+             pipeline would after a real 302, chain and all */
+          send(res, 200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store',
+            ...metaHeaders({ kind: 'doc', url: to, umbra: toUmbra(to), status: 200, hops: 2, redirected: true, tab: ctx.tabId, chain: ['302 lab.umbra', '200 example.com'] }),
+          }, localDoc({ ...ctx, url: to }, `<body><div class="kicker">fixture · followed 302</div>
+<h1>One hop, followed like a browser</h1>
+<p class="muted">The synthetic <code>302 -&gt; umbra://example.com/</code> was followed in this tab.
+The address bar shows where you landed, not where you started.</p>
+<pre>GET umbra://lab/redirect
+&lt; 302 Found   Location: umbra://example.com/
+GET umbra://example.com/  (synthetic landing document)</pre></body>`, to, '', toUmbra(to)));
+        }
       } }),
   samehost: Object.assign(() => `<body></body>`, { direct: (ctx, res) => {
       // same-host 301 must be followed silently: one document, zero new tabs
@@ -736,6 +789,7 @@ control to another program must not survive.</p>
   <a id="tel" href="tel:+10000000000">tel: link</a>
   <a id="ext" href="https://example.com/">external http link</a>
 </p>
+<pre id="out">checking…</pre>
 <script>
   try {
     var cv = document.getElementById('blobish');
@@ -743,10 +797,9 @@ control to another program must not survive.</p>
   } catch (e) { document.getElementById('out').textContent = 'blob: ' + e.message; }
   document.getElementById('out').textContent =
     'js href=' + JSON.stringify(document.getElementById('js').getAttribute('href')) +
-    ' · data src kept=' + /^data:image\/svg/.test(document.getElementById('inline').getAttribute('src')) +
-    ' · ext href on wire=' + /\/~umbra\//.test(document.getElementById('ext').getAttribute('href'));
-</script>
-<pre id="out">checking…</pre>`,
+    ' · data src kept=' + /^data:image\\/svg/.test(document.getElementById('inline').getAttribute('src')) +
+    ' · ext href on wire=' + /\\/~umbra\\//.test(document.getElementById('ext').getAttribute('href'));
+</script>`,
   xhr: (ctx) => `<body><div class="kicker">fixture · fetch / xhr / beacon</div>
 <h1>Runtime-built requests are re-anchored by the shim</h1>
 <pre id="o">running…</pre>
@@ -754,6 +807,7 @@ control to another program must not survive.</p>
 (async function(){
   var out=[];
   try{var r=await fetch('https://httpbin.org/get?via=fetch');var j=await r.json();out.push('fetch → '+r.status+' '+JSON.stringify(j.args))}catch(e){out.push('fetch failed: '+e)}
+  try{var rp=await fetch('https://httpbin.org/post',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({rpc:'player'})});var jp=await rp.json();out.push('fetch POST → '+rp.status+' '+(jp.data||'').slice(0,40))}catch(e){out.push('fetch POST failed: '+e)}
   try{var x=new XMLHttpRequest();x.open('GET','/relative-xhr.json');x.send();x.onloadend=function(){out.push('XHR relative → '+x.status)}}catch(e){out.push('xhr '+e)}
   try{var r2=await fetch('https://httpbin.org/headers');var j2=await r2.json();out.push('headers seen by origin: '+Object.keys(j2.headers).join(', '))}catch(e){}
   document.getElementById('o').textContent=out.join('\\n')
@@ -830,6 +884,18 @@ async function webSearch(q) {
 }
 
 /* ======================================================== the player === */
+/* Caption tracks ship with a ready-to-use same-origin WebVTT url, so both the
+   player capsule and /ytj consumers get playable subtitles without minting. */
+function withVtt(payload, ctx) {
+  if (!payload || !payload.captions) return payload;
+  return {
+    ...payload,
+    captions: payload.captions.map((c) => ({
+      ...c,
+      vtt: PFX + 'vtt/' + encodeToken({ u: c.raw, t: ctx.tabId, s: ctx.session, g: ctx.gen, m: 's' }) + '/captions.vtt',
+    })),
+  };
+}
 async function servePlayer(req, res, ctx, t) {
   let payload;
   try {
@@ -839,11 +905,7 @@ async function servePlayer(req, res, ctx, t) {
   }
   if (!payload) payload = { videoId: t.v, ok: false, reason: 'not a youtube video url' };
   payload = {
-    ...payload,
-    captions: (payload.captions || []).map((c) => ({
-      ...c,
-      vtt: PFX + 'vtt/' + encodeToken({ u: c.raw, t: ctx.tabId, s: ctx.session, g: ctx.gen, m: 's' }) + '/captions.vtt',
-    })),
+    ...withVtt(payload, ctx),
     ctx: { origin: ctx.origin, tab: ctx.tabId, key: ctx.key },
   };
   const body = `<div class="kicker">umbra player · ${payload.ok ? 'native stream' : 'fallback'}</div>
@@ -867,7 +929,7 @@ ${payload.ok
 select{font:inherit;font-size:12px;background:rgba(255,255,255,.07);color:#eaf1f8;border:1px solid rgba(255,255,255,.16);border-radius:9px;padding:7px 9px}
 iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:12px;background:#000}
 </style></head><body><main style="max-width:960px;width:100%">${body}</main>
-<script>${ji({ umbraCtx: 1 })}<\/script><script>${script}<\/script></body></html>`;
+<script>window.__UMBRA_CTX__=${ji({ umbraCtx: 1 })};<\/script><script>${script}<\/script></body></html>`;
   send(res, 200, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'player', videoId: t.v, ok: !!payload.ok }) }, html);
 }
 function fmtDur(s) {
@@ -911,7 +973,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-function s0() { return { follow: 'same-host', referrer: 'origin', ephemeral: 1 }; }
+function s0() { return { follow: 'all', referrer: 'origin', ephemeral: 1 }; }
 
 async function route(req, res) {
   let u;
@@ -930,6 +992,17 @@ async function route(req, res) {
   const sid = readSession(req);
   const seg = p.slice(PFX.length).split('/');
   const head = seg[0];
+  /* A signed wire token names its own session: decodeToken already verified
+     the HMAC, so a cookie-less request (blocked third-party cookies, curl) is
+     still fully authorized by the bearer it carries. Unsigned routes (p, lab,
+     doc, search) resolve through ?sid= / header / cookie instead. */
+  let s = session(sid);
+  if (!s && seg[1]) {
+    try {
+      const t0 = decodeToken(seg[1]);
+      if (t0 && t0.s) s = session(t0.s);
+    } catch {}
+  }
 
   if (head === 'boot') {
     let id = sid && sessions.has(sid) ? sid : newSession();
@@ -937,7 +1010,6 @@ async function route(req, res) {
     res.setHeader('set-cookie', `${COOKIE_NAME}=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200`);
     return json(res, { session: id, protocol: 'umbra/1', modes: [...MODES], portal: PORTAL, ts: Date.now() });
   }
-  const s = session(sid);
   if (!s) return fail(res, 401, 'no umbra session', 'GET /~umbra/boot first');
 
   const mkCtx = (url, mode, tabId) => {
@@ -1009,15 +1081,25 @@ async function route(req, res) {
       ? JSON.parse((await readReq(req)).toString('utf8') || '{}')
       : Object.fromEntries(u.searchParams);
     const raw = String(body.url || '');
+    /* umbra://player?v=<id> mints a capsule token directly: the player is
+       Umbra-authored, so there is no upstream URL to resolve. */
+    if (/^umbra:\/\/player(\/|\?|$)/i.test(raw)) {
+      const vid = (/[?&]v=([\w-]{11})/.exec(raw) || [])[1] || '';
+      if (!vid) return fail(res, 400, 'player needs a video id', 'umbra://player?v=<11 chars>');
+      const tabId = body.tab ? tabOf(s, body.tab).id : 'shell';
+      const tok = encodeToken({ u: 'umbra://player/youtube', v: vid, t: tabId, s: s.id, g: s.gen, m: 'c' });
+      return json(res, { umbra: raw, href: PFX + 'c/' + tok + '/player.html' });
+    }
     const abs = localAddressToUrl(raw) || resolveRef(raw, 'https://invalid.umbra/');
-    const localHref = /^umbra:\/\/(portal|home|help|stats|protocol|lab|search|player)(\/|\?|$)/i.test(raw)
-      ? localHrefFor(raw, tabOf(s, body.tab || 'shell').id) : null;
+    const localHref = /^umbra:\/\/(portal|home|help|stats|protocol|lab|search)(\/|\?|$)/i.test(raw)
+      ? localHrefFor(raw, tabOf(s, body.tab || 'shell').id, s.id) : null;
     if (localHref) return json(res, { umbra: raw, href: localHref });
     if (!abs) return fail(res, 400, 'unmappable address', raw.slice(0, 160));
     const tabId = body.tab ? tabOf(s, body.tab).id : null;
+    const mode = MODES.has(body.mode) ? body.mode : 'd';
     return json(res, {
       umbra: toUmbra(abs),
-      href: href({ tabId: tabId || 'shell', session: s.id, gen: s.gen, url: abs }, abs, body.mode || 'd'),
+      href: href({ tabId: tabId || 'shell', session: s.id, gen: s.gen, url: abs }, abs, mode),
     });
   }
 
@@ -1057,7 +1139,7 @@ async function route(req, res) {
     const vid = String(u.searchParams.get('v') || '').slice(0, 20);
     if (!/^[\w-]{11}$/.test(vid)) return fail(res, 400, 'bad video id', vid);
     const ctx = mkCtx('https://www.youtube.com/watch?v=' + vid, 'c', u.searchParams.get('t'));
-    try { return json(res, await ytInspect(ctx.url, ctx), 200, metaHeaders({ kind: 'ytj', videoId: vid })); }
+    try { return json(res, withVtt(await ytInspect(ctx.url, ctx), ctx), 200, metaHeaders({ kind: 'ytj', videoId: vid })); }
     catch (e) { return fail(res, 502, 'inspect failed', String(e.message || e)); }
   }
 
@@ -1110,7 +1192,16 @@ async function route(req, res) {
     const t = decodeToken(seg[1]);
     if (!t || t.s !== s.id || t.g !== s.gen) return fail(res, 403, 'bad token', 'signature, session or generation mismatch');
     const ctx = mkCtx(t.u, head, t.t);
-    return serve(ctx, req, res, { mode: head, range: req.headers.range || null });
+    const mopts = { mode: head, range: req.headers.range || null };
+    if (req.method && !/^(GET|HEAD)$/i.test(req.method)) {
+      /* fetch/XHR with a payload (JSON RPCs, uploads): the body rode the
+         browser→origin leg untouched — forward it, don't drop it */
+      try { mopts.body = await readReq(req, 64 * 1024 * 1024); }
+      catch (e) { return fail(res, 413, 'request body too large', 'xhr payloads cap at 64 MB'); }
+      mopts.method = req.method.toUpperCase();
+      mopts.ct = req.headers['content-type'] || null;
+    }
+    return serve(ctx, req, res, mopts);
   }
 
   /* ---- caption conversion: json3 -> WebVTT, same-origin bytes ---- */
@@ -1158,7 +1249,14 @@ async function route(req, res) {
     }
     const ctx = mkCtx(abs, mode, tabId);
     ctx.referrer = /^https?:/.test(t.url || '') ? t.url : null;
-    return serve(ctx, req, res, { mode, range: req.headers.range || null });
+    const popts = { mode, range: req.headers.range || null };
+    if (req.method && !/^(GET|HEAD)$/i.test(req.method)) {
+      try { popts.body = await readReq(req, 64 * 1024 * 1024); }
+      catch (e) { return fail(res, 413, 'request body too large', 'xhr payloads cap at 64 MB'); }
+      popts.method = req.method.toUpperCase();
+      popts.ct = req.headers['content-type'] || null;
+    }
+    return serve(ctx, req, res, popts);
   }
 
   return notFound(res, p);

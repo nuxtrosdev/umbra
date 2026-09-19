@@ -165,7 +165,9 @@ function scrubEmbeddedMarkup(seg, ctx, base, mode) {
     let host2 = '';
     try { host2 = new URL(abs).hostname; } catch { return w0; }
     if (host2.endsWith('.umbra') || host2 === '127.0.0.1' || host2 === 'localhost') return w0;
-    return pre + href(ctx, abs, 's').slice(0, 0) + '"' + href(ctx, abs, 's') + '"';
+    /* keep the original quoting: pre is the char before // (often the opening quote),
+       so the replacement must be the wire path alone. */
+    return pre + href(ctx, abs, 's');
   });
   return seg;
 }
@@ -287,6 +289,13 @@ export function rewriteHtml(html, o) {
         if (name === 'href' && /^umbra:\/\//i.test(String(value).trim())) return whole;
         if (next !== null && (name === 'href' || name === 'xlink:href') && (tag === 'a' || tag === 'area' || tag === 'iframe' || tag === 'frame')) {
           try { logicalFor = 'umbra://' + new URL(value, base).host + new URL(value, base).pathname + new URL(value, base).search + new URL(value, base).hash; } catch {}
+        }
+        /* forms submit from their logical action, not the opaque wire token:
+           GET serialises its fields onto this address, POST reports it as the
+           answer's address. Per-button overrides keep their own beside them. */
+        if (next !== null && ((name === 'action' && tag === 'form') ||
+            (name === 'formaction' && (tag === 'button' || tag === 'input')))) {
+          try { const abs = resolveRef(value, base); if (abs) logicalFor = toUmbra(abs); } catch {}
         }
         if (next === null) {
           /* data:/blob:/about: never touch the network, so they are left
