@@ -88,6 +88,34 @@ async function unit() {
   const H = await import('../server/html.mjs');
   const Y = await import('../server/youtube.mjs');
 
+  /* ---- piped-local: the instance Umbra runs itself ---- */
+  const PL = await import('../server/piped-local.mjs');
+  const PP = await import('../server/piped.mjs');
+
+  ok('the default pool leads with the local instance',
+    PP.INSTANCES[0] === PP.LOCAL && PP.INSTANCES.length > 1, PP.INSTANCES.slice(0, 3).join(','));
+  ok('innertube text nodes read as plain strings',
+    PL.txt({ simpleText: 'a' }) === 'a' && PL.txt({ runs: [{ text: 'x' }, { text: 'y' }] }) === 'xy' && PL.txt(null) === '');
+  ok('a gated reply is told apart from an honestly empty one',
+    PL.barren({ responseContext: {}, alerts: [{ alertRenderer: { text: { simpleText: "Sign in to confirm you're not a bot" } } }] }) === true &&
+    PL.barren({ contents: { sectionListRenderer: { contents: [] } } }) === false);
+  ok('the refusal wording is quoted back, not swallowed',
+    /sign in to confirm/i.test(PL.gateReason({ alerts: [{ text: "Sign in to confirm you're not a bot" }] })) &&
+    PL.gateReason({ contents: {} }) === '');
+  ok('durations parse from mm:ss and hh:mm:ss',
+    PL.durToSeconds('3:32') === 212 && PL.durToSeconds('1:02:03') === 3723 && PL.durToSeconds('') === 0);
+  ok('view counts parse from both long and abbreviated forms',
+    PL.viewsToNumber('1,234,567 views') === 1234567 && PL.viewsToNumber('1.2M views') === 1200000 &&
+    PL.viewsToNumber('12K') === 12000 && PL.viewsToNumber('nonsense') === 0);
+  /* the collector must find renderers wherever YouTube decides to nest them:
+     this is what keeps the parser alive across layout churn */
+  const buried = { a: { b: [{ c: { videoRenderer: { videoId: 'AAAAAAAAAAA', title: { runs: [{ text: 'deep' }] } } } }] } };
+  ok('renderers are found at arbitrary depth, not on a fixed path',
+    PL.collect(buried, 'videoRenderer').length === 1 &&
+    PL.videoItems(buried)[0].url === '/watch?v=AAAAAAAAAAA' && PL.videoItems(buried)[0].title === 'deep');
+  ok('video items de-duplicate across renderer shapes',
+    PL.videoItems({ x: { videoRenderer: { videoId: 'BBBBBBBBBBB' } }, y: { compactVideoRenderer: { videoId: 'BBBBBBBBBBB' } } }).length === 1);
+
   /* ---- innertube: client identities + visitor session ---- */
   const IT = await import('../server/innertube.mjs');
 
@@ -511,6 +539,75 @@ async function wire() {
     JSON.stringify(health.instances));
   ok('the portal links into the tube section',
     /umbra:\/\/tube\//.test((await call((await mint('umbra://home/', 'd', tn.tab)).href)).text));
+
+  /* ---- umbra's own piped instance, over the real REST surface ---- */
+  /* An external Piped client has no umbra session, so the door has to be
+     openable without one -- but it is shut until you say otherwise, because
+     it spends this machine's egress on whoever can reach it. */
+  const lshut = await callBare('/~umbra/piped/healthcheck');
+  ok('the piped api is shut to sessionless callers by default',
+    lshut.status === 401 && /UMBRA_PIPED_PUBLIC/.test(lshut.text), 'http ' + lshut.status);
+  const OPEN_PORT = UMBRA_PORT + 3;
+  const openOrigin = launch('server/index.mjs', [], {
+    PORT: String(OPEN_PORT),
+    UMBRA_YT_BASE: `http://127.0.0.1:${MOCK_PORT}`,
+    UMBRA_PIPED_PUBLIC: '1',
+  });
+  openOrigin.stderr.on('data', (d) => process.stderr.write(`[open] ${d}`));
+  await waitFor(`http://127.0.0.1:${OPEN_PORT}/~umbra/boot`, 'public piped origin');
+  const lopen = await fetch(`http://127.0.0.1:${OPEN_PORT}/~umbra/piped/streams/${VID}`)
+    .then((r) => r.json().then((j) => ({ status: r.status, j })));
+  ok('with UMBRA_PIPED_PUBLIC a cookieless piped client is served',
+    lopen.status === 200 && lopen.j.title === 'Mock Video Title',
+    'http ' + lopen.status + ' ' + lopen.j.title);
+
+  const hc = await call('/~umbra/piped/healthcheck');
+  ok('the local instance answers a piped healthcheck',
+    hc.status === 200 && JSON.parse(hc.text).status === 'ok', 'http ' + hc.status);
+  const lstream = JSON.parse((await call(`/~umbra/piped/streams/${VID}`)).text);
+  ok('local /streams returns the piped contract, extracted here',
+    lstream.title === 'Mock Video Title' && Array.isArray(lstream.videoStreams) && Array.isArray(lstream.audioStreams),
+    'title=' + lstream.title);
+  ok('local /streams splits progressive from video-only the piped way',
+    lstream.videoStreams.some((v) => v.videoOnly === false && v.itag === 18) &&
+    lstream.videoStreams.some((v) => v.videoOnly === true && v.itag === 137) &&
+    lstream.audioStreams.every((a2) => a2.videoOnly === false), JSON.stringify(lstream.videoStreams.map((v) => v.itag + ':' + v.videoOnly)));
+  ok('local /streams walked the client ladder past the gated client',
+    lstream.umbraClient === 'visionos' && (lstream.umbraTried || []).some((t) => t.client === 'web'),
+    lstream.umbraClient + ' tried=' + JSON.stringify(lstream.umbraTried));
+  ok('local /streams carries subtitles in the piped shape',
+    Array.isArray(lstream.subtitles) && lstream.subtitles[0]?.code === 'en');
+  const lsearch = JSON.parse((await call('/~umbra/piped/search?q=local+test')).text);
+  ok('local /search parses videoRenderers and drops non-videos',
+    lsearch.items.length === 1 && lsearch.items[0].title === 'Local Search Hit' &&
+    lsearch.items[0].duration === 212 && lsearch.items[0].views === 1234567 &&
+    lsearch.items[0].uploaderVerified === true, JSON.stringify(lsearch.items[0]));
+  const ltrend = JSON.parse((await call('/~umbra/piped/trending?region=US')).text);
+  ok('local /trending returns a bare array like piped does',
+    Array.isArray(ltrend) && ltrend[0].title === 'Local Trending Hit');
+  const lchan = JSON.parse((await call('/~umbra/piped/channel/UCmocklocal')).text);
+  ok('local /channel returns header metadata plus uploads',
+    lchan.name === 'Local Channel' && lchan.subscriberCount === 1200000 && lchan.verified === true &&
+    lchan.relatedStreams[0].title === 'Local Channel Upload', lchan.name + ' subs=' + lchan.subscriberCount);
+  const lcmt = JSON.parse((await call(`/~umbra/piped/comments/${VID}`)).text);
+  ok('local /comments follows the continuation and reads entity payloads',
+    lcmt.disabled === false && lcmt.comments[0].commentText === 'a local comment' &&
+    lcmt.comments[0].author === 'Local Commenter' && lcmt.comments[0].likeCount === 12,
+    JSON.stringify(lcmt.comments[0] || {}));
+  ok('local instance uses the WEB client for metadata endpoints',
+    (await (async () => {
+      const hs = await (await fetch(`${MOCK}/__hits`)).json();
+      return hs.filter((h) => /youtubei\/v1\/(search|browse|next)/.test(h.path)).every((h) => h.clientName === 'WEB');
+    })()));
+  const lgated = await call('/~umbra/piped/search?q=__gated__');
+  ok('a bot-gated reply is raised as a failure, not served as zero results',
+    lgated.status === 502 && /Sign in to confirm/.test(lgated.text), 'http ' + lgated.status + ' ' + lgated.text.slice(0, 90));
+  const lempty = await call('/~umbra/piped/search?q=__nohits__');
+  ok('an honestly empty search is still a successful search',
+    lempty.status === 200 && JSON.parse(lempty.text).items.length === 0, 'http ' + lempty.status);
+
+  const l404 = await call('/~umbra/piped/nope');
+  ok('an unknown piped endpoint 404s rather than 500s', l404.status === 404, 'http ' + l404.status);
 
   /* ---- burn revokes everything ---- */
   const preBurn = await mint(MOCK + '/page2', 'd', tn.tab);

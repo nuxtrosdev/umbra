@@ -27,6 +27,16 @@
  */
 import { upstream, readBody } from './net.mjs';
 import { href } from './protocol.mjs';
+import { handle as localHandle } from './piped-local.mjs';
+
+/* The instance Umbra runs itself (piped-local.mjs), addressed in-process so
+   the pool never makes an HTTP round trip to its own socket. It is first by
+   default: it is instant, involves no third party, and cannot disappear.
+   It is NOT a bot-gate bypass — extraction still happens on this egress —
+   so the public pool stays behind it as the thing that rescues a gated
+   local instance. Drop it with UMBRA_PIPED_INSTANCES if you want the
+   third-party path only. */
+export const LOCAL = 'local';
 
 /* Public API instances. Overridable, because this list ages fast: the set of
    surviving public instances churns as YouTube blocks them. */
@@ -43,7 +53,7 @@ const DEFAULT_INSTANCES = [
   'https://pipedapi.nosebs.ru',
 ];
 
-export const INSTANCES = (process.env.UMBRA_PIPED_INSTANCES || DEFAULT_INSTANCES.join(','))
+export const INSTANCES = (process.env.UMBRA_PIPED_INSTANCES || [LOCAL, ...DEFAULT_INSTANCES].join(','))
   .split(',')
   .map((s) => s.trim().replace(/\/$/, ''))
   .filter(Boolean);
@@ -87,6 +97,22 @@ export function resetInstanceHealth() {
 export async function api(path) {
   const tried = [];
   for (const base of order()) {
+    if (base === LOCAL) {
+      /* same function a third party would reach over HTTP, called directly */
+      try {
+        const qi = path.indexOf('?');
+        const json = await localHandle(
+          qi < 0 ? path : path.slice(0, qi),
+          new URLSearchParams(qi < 0 ? '' : path.slice(qi + 1)));
+        preferred = base;
+        benched.delete(base);
+        return { json, instance: base, tried };
+      } catch (e) {
+        tried.push({ instance: base, note: String(e.message || e).slice(0, 120) });
+        benched.set(base, Date.now() + COOLDOWN);
+        continue;
+      }
+    }
     try {
       const res = await upstream(base + path, {
         headers: {

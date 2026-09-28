@@ -416,6 +416,101 @@ const server = http.createServer((req, res) => {
       ],
     }));
   }
+  /* ---- innertube metadata endpoints, for the LOCAL piped instance --------
+     Renderer-shaped like the real thing, deliberately nested at an awkward
+     depth so the recursive collector is what finds them, not a fixed path. */
+  if (p === '/youtubei/v1/search' || p === '/youtubei/v1/browse' || p === '/youtubei/v1/next') {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    return req.on('end', () => {
+      let body = {};
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { /* record anyway */ }
+      HITS.push({
+        path: p, method: req.method,
+        clientName: ((body.context || {}).client || {}).clientName || null,
+        browseId: body.browseId || null, query: body.query || null,
+        continuation: body.continuation ? 'yes' : null,
+      });
+      const vr = (id, title) => ({
+        videoRenderer: {
+          videoId: id,
+          title: { runs: [{ text: title }] },
+          thumbnail: { thumbnails: [{ url: `${base}/thumb.jpg`, width: 120 }, { url: `${base}/thumb.jpg`, width: 640 }] },
+          ownerText: { runs: [{ text: 'Mock Channel', navigationEndpoint: { browseEndpoint: { browseId: 'UCmocklocal' } } }] },
+          publishedTimeText: { simpleText: '2 weeks ago' },
+          lengthText: { simpleText: '3:32' },
+          viewCountText: { simpleText: '1,234,567 views' },
+          ownerBadges: [{ metadataBadgeRenderer: { style: 'BADGE_STYLE_TYPE_VERIFIED' } }],
+          detailedMetadataSnippets: [{ snippetText: { runs: [{ text: 'a local snippet' }] } }],
+        },
+      });
+      if (p === '/youtubei/v1/search') {
+        /* a bot-gated reply: valid JSON, HTTP 200, and not one renderer in it */
+        if (body.query === '__gated__') {
+          return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+            responseContext: {},
+            alerts: [{ alertRenderer: { type: 'ERROR', text: { simpleText: "Sign in to confirm you're not a bot" } } }],
+          }));
+        }
+        /* a real miss: no videos, but the scaffolding is still there */
+        if (body.query === '__nohits__') {
+          return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+            contents: { twoColumnSearchResultsRenderer: { primaryContents: { sectionListRenderer: {
+              contents: [{ itemSectionRenderer: { contents: [{ backgroundPromoRenderer: {
+                title: { runs: [{ text: 'No results found' }] } } }] } }],
+            } } } },
+          }));
+        }
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+          contents: { twoColumnSearchResultsRenderer: { primaryContents: { sectionListRenderer: {
+            contents: [{ itemSectionRenderer: { contents: [vr(VID, 'Local Search Hit'), { channelRenderer: { channelId: 'UCx' } }] } }],
+          } } } },
+        }));
+      }
+      if (p === '/youtubei/v1/browse') {
+        if (String(body.browseId || '').startsWith('UC')) {
+          return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+            metadata: { channelMetadataRenderer: { externalId: body.browseId, title: 'Local Channel', description: 'local channel desc' } },
+            header: { c4TabbedHeaderRenderer: {
+              title: 'Local Channel',
+              avatar: { thumbnails: [{ url: `${base}/thumb.jpg` }] },
+              banner: { thumbnails: [{ url: `${base}/photo.jpg` }] },
+              subscriberCountText: { simpleText: '1.2M subscribers' },
+              badges: [{ metadataBadgeRenderer: { style: 'BADGE_STYLE_TYPE_VERIFIED' } }],
+            } },
+            contents: { twoColumnBrowseResultsRenderer: { tabs: [{ tabRenderer: { content: { richGridRenderer: {
+              contents: [{ richItemRenderer: { content: vr(VID, 'Local Channel Upload') } }],
+            } } } }] } },
+          }));
+        }
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+          contents: { twoColumnBrowseResultsRenderer: { tabs: [{ tabRenderer: { content: { sectionListRenderer: {
+            contents: [{ itemSectionRenderer: { contents: [{ shelfRenderer: { content: { expandedShelfContentsRenderer: {
+              items: [vr(VID, 'Local Trending Hit')],
+            } } } }] } }],
+          } } } }] } },
+        }));
+      }
+      /* next: first call hands back a continuation, second the comments */
+      if (body.continuation) {
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+          frameworkUpdates: { entityBatchUpdate: { mutations: [{ payload: { commentEntityPayload: {
+            properties: { commentId: 'c1', content: { content: 'a local comment' }, publishedTime: '2 hours ago' },
+            author: { displayName: 'Local Commenter', channelId: 'UCcommenter', avatarThumbnailUrl: `${base}/thumb.jpg`, isVerified: true },
+            toolbar: { likeCountNotliked: '12' },
+          } } }] } },
+        }));
+      }
+      return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+        contents: { twoColumnWatchNextResults: { results: { results: { contents: [
+          { itemSectionRenderer: { contents: [{ continuationItemRenderer: {
+            continuationEndpoint: { continuationCommand: { token: 'MOCK_COMMENT_TOKEN' } },
+          } }] } },
+        ] } } } },
+      }));
+    });
+  }
+
   if (p === '/youtubei/v1/player') {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));

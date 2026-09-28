@@ -357,16 +357,38 @@ export function rewriteInnertubeBody(buf, { client = LADDER[0], visitorData = ''
 }
 
 /**
+ * One InnerTube RPC as `client`. Returns the parsed JSON or throws.
+ *
+ * `endpoint` is the bare name ('player', 'search', 'browse', 'next').
+ * `apiKey` is optional: modern InnerTube accepts keyless calls, but passing
+ * the page's own key when we have it keeps the request consistent with what
+ * the embed document would have sent.
+ */
+export async function innertubeRequest(endpoint, payload, key, { visitorData = '', cookie = '', apiKey = '', videoId = '' } = {}) {
+  const url = YT_BASE + '/youtubei/v1/' + endpoint + '?prettyPrint=false' +
+    (apiKey ? '&key=' + encodeURIComponent(apiKey) : '');
+  const body = JSON.stringify({
+    context: buildContext(key, { visitorData }),
+    ...payload,
+  });
+  const res = await upstream(url, {
+    method: 'POST',
+    headers: { ...buildHeaders(key, { visitorData, videoId, cookie }), 'content-length': String(Buffer.byteLength(body)) },
+    body,
+  });
+  const raw = await readBody(res.res, { limit: 16 * 1024 * 1024 });
+  if (res.status !== 200) throw new Error('innertube ' + endpoint + '/' + key + ' http ' + res.status);
+  return JSON.parse(raw.toString('utf8'));
+}
+
+/**
  * One /youtubei/v1/player call as `client`. Returns the parsed player response
  * or throws. `apiKey` is optional: modern InnerTube accepts keyless calls, but
  * passing the page's own key when we have it keeps the request consistent with
  * what the embed document would have sent.
  */
 export async function playerRequest(videoId, key, { visitorData = '', cookie = '', apiKey = '' } = {}) {
-  const url = YT_BASE + '/youtubei/v1/player?prettyPrint=false' +
-    (apiKey ? '&key=' + encodeURIComponent(apiKey) : '');
-  const body = JSON.stringify({
-    context: buildContext(key, { visitorData }),
+  return innertubeRequest('player', {
     videoId,
     contentCheckOk: true,
     racyCheckOk: true,
@@ -376,15 +398,7 @@ export async function playerRequest(videoId, key, { visitorData = '', cookie = '
         signatureTimestamp: 20073,
       },
     },
-  });
-  const res = await upstream(url, {
-    method: 'POST',
-    headers: { ...buildHeaders(key, { visitorData, videoId, cookie }), 'content-length': String(Buffer.byteLength(body)) },
-    body,
-  });
-  const raw = await readBody(res.res, { limit: 16 * 1024 * 1024 });
-  if (res.status !== 200) throw new Error('innertube ' + key + ' http ' + res.status);
-  return JSON.parse(raw.toString('utf8'));
+  }, key, { visitorData, cookie, apiKey, videoId });
 }
 
 export { YT_BASE, EMBED_HOST };

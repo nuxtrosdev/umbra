@@ -30,10 +30,15 @@ import {
 } from './innertube.mjs';
 import { portalDoc, labIndexDoc, helpDoc, statsDoc, DOC_CSS } from './docs.mjs';
 import * as piped from './piped.mjs';
+import * as pipedLocal from './piped-local.mjs';
 import { TUBE_CSS, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.join(HERE, '..', 'public');
+/* Serve the built-in Piped instance to callers with no Umbra session, i.e. act
+   as a public Piped API. Off by default: it is outbound extraction on your
+   address for anyone who can reach this origin. */
+const PIPED_PUBLIC = /^(1|true|yes)$/i.test(String(process.env.UMBRA_PIPED_PUBLIC || ''));
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.UMBRA_HOST || '0.0.0.0';
 const DOC_HOPS = 6;
@@ -1064,6 +1069,34 @@ async function route(req, res) {
     res.setHeader('set-cookie', `${COOKIE_NAME}=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200`);
     return json(res, { session: id, protocol: 'umbra/1', modes: [...MODES], portal: PORTAL, policy: session(id).policy, ts: Date.now() });
   }
+  /* ---- Umbra's own Piped instance, spoken over the real REST surface ----
+     Same shapes as any public instance, so an external Piped client (or
+     another Umbra) can be pointed at this origin.
+
+     Sits ahead of the session gate because a third-party Piped client has no
+     Umbra session -- but it stays shut unless UMBRA_PIPED_PUBLIC is set. This
+     is the only surface that would drive outbound extraction for an
+     unauthenticated caller, so opening it is a deliberate act rather than a
+     default. The internal pool does not need it open: piped.mjs calls the
+     same handler in-process. */
+  if (head === 'piped') {
+    if (!s && !PIPED_PUBLIC) {
+      return fail(res, 401, 'piped api is session-only',
+        'set UMBRA_PIPED_PUBLIC=1 to serve this instance to external clients');
+    }
+    const sub = '/' + seg.slice(1).join('/');
+    try {
+      const out = await pipedLocal.handle(sub, u.searchParams);
+      return json(res, out, 200, metaHeaders({ kind: 'piped-api', endpoint: sub }));
+    } catch (e) {
+      return json(res, {
+        error: String(e.message || e),
+        /* which clients were tried, when the failure came from extraction */
+        tried: e.tried || undefined,
+      }, e.status === 404 ? 404 : 502, metaHeaders({ kind: 'piped-api-error', endpoint: sub }));
+    }
+  }
+
   if (!s) return fail(res, 401, 'no umbra session', 'GET /~umbra/boot first');
 
   const mkCtx = (url, mode, tabId) => {

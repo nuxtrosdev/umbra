@@ -84,9 +84,11 @@ export function homeDoc(t) {
   <header>
     <span class="kicker">umbra tube · piped front end</span>
     <h1>Tube</h1>
-    <p class="muted">YouTube's catalogue without asking YouTube. A Piped instance does the extraction on
-    <i>its</i> egress and hands Umbra plain JSON; the video bytes still come back through the Umbra media wire,
-    so nothing in your browser talks to Google. This is the path to use when the native player is bot-gated.</p>
+    <p class="muted">YouTube's catalogue over the Piped API. Umbra runs its own instance
+    (<code>/~umbra/piped/</code>), so by default nothing here involves a third party — but that instance
+    extracts from <i>this</i> machine's address, so when it gets bot-gated the pool falls through to public
+    instances that extract from theirs. Either way the video bytes come back over the Umbra media wire, so
+    nothing in your browser talks to Google. The chip below says which instance actually served this page.</p>
     ${searchForm()}
   </header>
   ${provenance(t)}
