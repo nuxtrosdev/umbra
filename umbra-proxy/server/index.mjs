@@ -21,6 +21,13 @@ import {
 import { upstream, readBody, outboundHeaders, CookieJar, UA } from './net.mjs';
 import { rewriteHtml, rewriteCssUrls, injectShim, decodeHtml } from './html.mjs';
 import { inspect as ytInspect, isYouTube, parseVideoId } from './youtube.mjs';
+import {
+  isInnertubeUrl,
+  rewriteInnertubeBody,
+  buildHeaders as itHeaders,
+  getVisitorData,
+  LADDER as IT_LADDER,
+} from './innertube.mjs';
 import { portalDoc, labIndexDoc, helpDoc, statsDoc, DOC_CSS } from './docs.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -434,6 +441,35 @@ async function serve(ctx, req, res, opts = {}) {
     if (upBody) {
       headers['content-type'] = upCt || 'application/x-www-form-urlencoded';
       headers['content-length'] = String(upBody.length);
+    }
+
+    /* ---- InnerTube interception -----------------------------------------
+       The embedded player mints its own /youtubei/v1/* POSTs from page JS,
+       and those carry the browser's WEB client identity — the one under the
+       full PO-token regime. Rewrite the context in flight so in-page RPCs
+       present the same client the inspect ladder settled on, with the same
+       reused visitor identity. Non-InnerTube POSTs are untouched. */
+    if (upBody && upMethod === 'POST' && isInnertubeUrl(url)) {
+      try {
+        const vis = await getVisitorData({ cookie: headers.cookie || '' });
+        const src = Buffer.isBuffer(upBody) ? upBody : Buffer.from(String(upBody));
+        const rewritten = rewriteInnertubeBody(src, {
+          client: IT_LADDER[0],
+          visitorData: vis.value,
+        });
+        if (rewritten) {
+          upBody = rewritten;
+          upCt = 'application/json';
+          Object.assign(headers, itHeaders(IT_LADDER[0], {
+            visitorData: vis.value,
+            videoId: '',
+            cookie: headers.cookie || '',
+          }));
+          headers['content-length'] = String(upBody.length);
+        }
+      } catch {
+        /* identity minting is best-effort; forward the original body */
+      }
     }
 
     for (const k of Object.keys(headers)) if (headers[k] == null || headers[k] === '') delete headers[k];
@@ -916,9 +952,13 @@ ${payload.ok
        <span class="kicker" style="margin:0 8px 0 0">${payload.video.length} video tracks</span>
        <span class="kicker" style="margin:0 8px 0 0">${payload.audio.length} audio tracks</span>
        <span class="kicker" style="margin:0 8px 0 0">${payload.captions.length} caption track(s)</span></p>`
-    : `<p class="warn">Upstream delivered formats with the stream URLs removed (${esc(payload.reason || 'blocked')}),
-       which is Google's bot gate on this egress address. Umbra therefore falls back to the proxied embed document.
-       On a residential egress IP the native path is used automatically.</p>`}
+    : `<p class="warn">No fetchable stream: ${esc(payload.reason || 'blocked')}.
+       Umbra falls back to the proxied embed document.</p>
+       <p class="muted">Tried ${(payload.attempts || []).length} InnerTube client(s):
+       ${esc((payload.attempts || []).map((a) => a.client + ' → ' + (a.ok ? 'ok' : a.note || a.status)).join('; ')) || 'none'}.
+       Visitor identity: ${esc(payload.visitorSource || 'none')}${payload.visitorSynthetic ? ' (synthetic — could not mint a real one)' : ''}.
+       Client order is set by UMBRA_YT_CLIENTS. A PO-token gate on every client is an egress-IP reputation
+       problem that client choice cannot fix; the native path returns on a residential egress.</p>`}
 <div id="player" data-info='${ji(payload).replace(/'/g, '&#39;')}'></div>`;
   const script = fs.readFileSync(path.join(PUB, 'player.js'), 'utf8');
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">

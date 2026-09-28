@@ -88,6 +88,60 @@ async function unit() {
   const H = await import('../server/html.mjs');
   const Y = await import('../server/youtube.mjs');
 
+  /* ---- innertube: client identities + visitor session ---- */
+  const IT = await import('../server/innertube.mjs');
+
+  const realVisitor = Buffer.concat([
+    Buffer.from([0x0a, 0x0b]), Buffer.from('AbCdEfGhIjK', 'ascii'), Buffer.from([0x28, 0xd0, 0x0f]),
+  ]).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  ok('visitorData validator accepts a real protobuf-shaped token', IT.looksLikeVisitorData(realVisitor));
+  ok('visitorData validator rejects a random string',
+    !IT.looksLikeVisitorData('totally-random-not-a-token-at-all-000000') &&
+    !IT.looksLikeVisitorData('') && !IT.looksLikeVisitorData('short'));
+  ok('synthesized visitorData is structurally valid (0x0a 0x0b header)',
+    IT.looksLikeVisitorData(IT.synthesizeVisitorData()));
+  ok('synthesized tokens are distinct per call but each well-formed',
+    IT.synthesizeVisitorData() !== IT.synthesizeVisitorData());
+
+  /* The production default must lead with a client that does not need the JS
+     player, because Umbra cannot unscramble signature-ciphered urls. */
+  ok('default ladder leads with a non-JS-player client',
+    IT.LADDER.length >= 2 && IT.CLIENTS[IT.LADDER[0]].jsPlayer === false, IT.LADDER.join(','));
+  ok('every ladder entry is a known client', IT.LADDER.every((k) => !!IT.CLIENTS[k]));
+
+  const embCtx = IT.buildContext('web_embedded', { visitorData: realVisitor });
+  ok('embedded client asks for the EMBED screen', embCtx.client.clientScreen === 'EMBED');
+  ok('embedded client claims a non-YouTube embed host',
+    !!embCtx.thirdParty?.embedUrl && !/youtube\.com/.test(embCtx.thirdParty.embedUrl), embCtx.thirdParty?.embedUrl);
+  ok('client context carries name, version and visitor id',
+    embCtx.client.clientName === 'WEB_EMBEDDED_PLAYER' && !!embCtx.client.clientVersion &&
+    embCtx.client.visitorData === realVisitor);
+  const vrCtx = IT.buildContext('android_vr', { visitorData: realVisitor });
+  ok('ANDROID_VR context mimics the Quest player',
+    vrCtx.client.clientName === 'ANDROID_VR' && vrCtx.client.deviceMake === 'Oculus' &&
+    /youtube\.vr\.oculus/.test(vrCtx.client.userAgent));
+  const vrH = IT.buildHeaders('android_vr', { visitorData: realVisitor, videoId: VID });
+  ok('headers agree with the in-body identity',
+    vrH['x-youtube-client-name'] === '28' && vrH['x-goog-visitor-id'] === realVisitor &&
+    vrH['user-agent'] === vrCtx.client.userAgent);
+
+  ok('innertube url detector matches the RPC surface only',
+    IT.isInnertubeUrl('https://www.youtube.com/youtubei/v1/player') &&
+    IT.isInnertubeUrl('https://youtubei.googleapis.com/youtubei/v1/next') &&
+    !IT.isInnertubeUrl('https://www.youtube.com/watch?v=' + VID) &&
+    !IT.isInnertubeUrl('https://example.com/youtubei/v1/player'));
+
+  const itRw = IT.rewriteInnertubeBody(
+    Buffer.from(JSON.stringify({ context: { client: { clientName: 'WEB', clientVersion: '2.0' } }, videoId: VID })),
+    { client: 'android_vr', visitorData: realVisitor });
+  const itRwj = itRw && JSON.parse(itRw.toString('utf8'));
+  ok('in-flight POST body is re-identified',
+    itRwj?.context?.client?.clientName === 'ANDROID_VR' && itRwj.context.client.visitorData === realVisitor &&
+    itRwj.videoId === VID && itRwj.contentCheckOk === true);
+  ok('non-innertube bodies pass through untouched',
+    IT.rewriteInnertubeBody(Buffer.from(JSON.stringify({ hello: 'world' }))) === null &&
+    IT.rewriteInnertubeBody(Buffer.from('not json at all')) === null);
+
   const tok = P.encodeToken({ u: 'http://x/y', t: 'T1', s: 'S1', g: 'G1', m: 'd' });
   ok('token round-trips', P.decodeToken(tok)?.u === 'http://x/y');
   ok('tampered token refused', P.decodeToken(tok.slice(0, -2) + 'xx') === null);
@@ -293,7 +347,7 @@ async function wire() {
 
   /* ---- youtube: inspect + player against the mock watch page ---- */
   const ytj = JSON.parse((await call(`/~umbra/ytj?v=${VID}&t=${tn.tab}`)).text);
-  ok('inspect lifts streamingData from the watch page', ytj.videoId === VID && ytj.ok === true && ytj.title === 'Mock Video Title', ytj.title + ' muxed=' + ytj.muxed?.length);
+  ok('inspect lifts streamingData via the embed + client ladder', ytj.videoId === VID && ytj.ok === true && ytj.title === 'Mock Video Title', ytj.title + ' muxed=' + ytj.muxed?.length);
   ok('muxed + adaptive tracks each get a mode-m wire url',
     ytj.muxed?.length === 1 && ytj.video?.length === 1 && ytj.audio?.length === 1 &&
     [ytj.muxed[0], ytj.video[0], ytj.audio[0]].every((f) => f.wire?.startsWith('/~umbra/m/')));
@@ -304,6 +358,33 @@ async function wire() {
     const vtt = await call(ytj.captions[0].vtt);
     return /^WEBVTT/.test(vtt.text) && /hello world/.test(vtt.text) && /text\/vtt/.test(vtt.headers.get('content-type') || '');
   })());
+  /* ---- anti-bot: embed surface, client ladder, visitor reuse ---- */
+  const hits = await (await fetch(`${MOCK}/__hits`)).json();
+  const itHits = hits.filter((h) => h.path === '/youtubei/v1/player');
+  ok('inspect reads config from /embed/, never the watch page',
+    hits.some((h) => h.path.startsWith('/embed/')) && !hits.some((h) => h.path === '/watch'),
+    hits.map((h) => h.path).join(' '));
+  ok('a real visitor identity is minted from sw.js_data',
+    hits.some((h) => h.path === '/sw.js_data') && ytj.visitorSource === 'sw.js_data' &&
+    ytj.visitorSynthetic === false, ytj.visitorSource);
+  ok('gated client is tried, then the ladder falls through to one that works',
+    ytj.attempts?.[0]?.client === 'web' && ytj.attempts[0].ok === false &&
+    ytj.client === 'visionos' && ytj.ok === true,
+    JSON.stringify(ytj.attempts));
+  ok('the gated attempt is reported as url-stripping, not a generic failure',
+    /stripped/.test(ytj.attempts?.[0]?.note || ''), ytj.attempts?.[0]?.note);
+  ok('each innertube POST presents the ladder identity in body and headers',
+    itHits.length >= 2 &&
+    itHits[0].clientName === 'WEB' && itHits[0].clientNameHeader === '1' &&
+    itHits[1].clientName === 'VISIONOS' && itHits[1].clientNameHeader === '101',
+    itHits.map((h) => h.clientName + '/' + h.clientNameHeader).join(' '));
+  ok('one visitor identity is reused across requests, never randomised',
+    itHits.length >= 2 && itHits.every((h) => h.visitorData && h.visitorData === itHits[0].visitorData) &&
+    itHits.every((h) => h.visitorHeader === itHits[0].visitorData),
+    itHits.map((h) => (h.visitorData || '').slice(0, 12)).join(' '));
+  ok('each client sends its own matching user-agent',
+    itHits[0].ua !== itHits[1].ua && /Chrome/.test(itHits[0].ua) && /Safari/.test(itHits[1].ua));
+
   const player = await call((await mint(`umbra://player?v=${VID}`, 'c', tn.tab)).href);
   ok('player capsule serves the native-stream payload (mock not gated)',
     player.status === 200 && /umbra player · native stream/.test(player.text) &&
@@ -356,6 +437,10 @@ async function wire() {
   const origin = launch('server/index.mjs', [], {
     PORT: String(UMBRA_PORT),
     UMBRA_YT_BASE: `http://127.0.0.1:${MOCK_PORT}`,
+    /* Deliberately lead with a client the mock gates, so the wire suite
+       exercises the ladder *falling through* rather than succeeding on the
+       first try. The production default order is asserted in unit(). */
+    UMBRA_YT_CLIENTS: 'web,visionos',
   });
   for (const [k, n] of [[mock, 'mock'], [origin, 'origin']]) {
     k.stderr.on('data', (d) => process.stderr.write(`[${n}] ${d}`));
