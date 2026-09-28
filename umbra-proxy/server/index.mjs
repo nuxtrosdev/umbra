@@ -29,6 +29,8 @@ import {
   LADDER as IT_LADDER,
 } from './innertube.mjs';
 import { portalDoc, labIndexDoc, helpDoc, statsDoc, DOC_CSS } from './docs.mjs';
+import * as piped from './piped.mjs';
+import { TUBE_CSS, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.join(HERE, '..', 'public');
@@ -361,9 +363,9 @@ async function serve(ctx, req, res, opts = {}) {
      locally and never reaches a resolver. */
   {
     const hm = /^(https?:\/\/)([^/:]+)(:\d+)?(\/.*|)$/i.exec(url);
-    if (hm && /^(lab|portal|help|stats|home)$/i.test(hm[2])) url = hm[1] + hm[2] + '.umbra' + (hm[3] || '') + hm[4];
+    if (hm && /^(lab|portal|help|stats|home|tube)$/i.test(hm[2])) url = hm[1] + hm[2] + '.umbra' + (hm[3] || '') + hm[4];
   }
-  if (/^https?:\/\/([a-z0-9-]+\.)?umbra\b/i.test(url) && !/^https?:\/\/(lab|portal|help|stats)\.umbra/i.test(url)) {
+  if (/^https?:\/\/([a-z0-9-]+\.)?umbra\b/i.test(url) && !/^https?:\/\/(lab|portal|help|stats|tube)\.umbra/i.test(url)) {
     return send(res, 404, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'umbra-404', url }) },
       errPage(ctx, url, 'no umbra resource at that logical address', []));
   }
@@ -675,6 +677,7 @@ function localAddressToUrl(raw) {
   if (/^umbra:\/\/protocol(\/|\?|$)/i.test(s)) return 'https://portal.umbra/help';
   if (/^umbra:\/\/(portal|home)(\/|\?|$)/i.test(s)) return 'https://portal.umbra/home';
   if (/^umbra:\/\/lab/.test(s)) return 'https://lab.umbra/' + s.slice('umbra://lab'.length).replace(/^\//, '');
+  if (/^umbra:\/\/tube(\/|\?|$)/i.test(s)) return 'https://tube.umbra/' + s.slice('umbra://tube'.length).replace(/^\//, '');
   if (/^umbra:\/\/search\//.test(s)) {
     const q = new URL(s.replace('umbra://search/', 'https://search.umbra/')).searchParams.get('q');
     return 'https://portal.umbra/search?q=' + encodeURIComponent(q || '');
@@ -690,6 +693,12 @@ function localHrefFor(raw, tabId, sid) {
   if (u.startsWith('https://lab.umbra/')) {
     const key = /^https:\/\/lab\.umbra\/([\w-]+)/.exec(u)[1];
     return PFX + 'lab/' + key + tail;
+  }
+  if (u.startsWith('https://tube.umbra/')) {
+    const rest = u.slice('https://tube.umbra/'.length);
+    const [pth, qs] = rest.split('?');
+    return PFX + 'tube' + (pth ? '/' + pth : '') + '?' + (qs ? qs + '&' : '') +
+      't=' + encodeURIComponent(tabId) + (sid ? '&sid=' + encodeURIComponent(sid) : '');
   }
   if (u.startsWith('https://portal.umbra/search')) {
     const qs = u.slice(u.indexOf('?'));
@@ -961,7 +970,9 @@ ${payload.ok
        ${esc((payload.attempts || []).map((a) => a.client + ' → ' + (a.ok ? 'ok' : a.note || a.status)).join('; ')) || 'none'}.
        Visitor identity: ${esc(payload.visitorSource || 'none')}${payload.visitorSynthetic ? ' (synthetic — could not mint a real one)' : ''}.
        Client order is set by UMBRA_YT_CLIENTS. A PO-token gate on every client is an egress-IP reputation
-       problem that client choice cannot fix; the native path returns on a residential egress.</p>`}
+       problem that client choice cannot fix; the native path returns on a residential egress.</p>
+       <p><a class="btn" href="umbra://tube/watch?v=${esc(payload.videoId)}">watch it through Umbra Tube instead</a>
+       <span class="muted"> — a Piped instance extracts on its egress, not yours.</span></p>`}
 <div id="player" data-info='${ji(payload).replace(/'/g, '&#39;')}'></div>`;
   const script = fs.readFileSync(path.join(PUB, 'player.js'), 'utf8');
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -1134,7 +1145,7 @@ async function route(req, res) {
       return json(res, { umbra: raw, href: PFX + 'c/' + tok + '/player.html' });
     }
     const abs = localAddressToUrl(raw) || resolveRef(raw, 'https://invalid.umbra/');
-    const localHref = /^umbra:\/\/(portal|home|help|stats|protocol|lab|search)(\/|\?|$)/i.test(raw)
+    const localHref = /^umbra:\/\/(portal|home|help|stats|protocol|lab|search|tube)(\/|\?|$)/i.test(raw)
       ? localHrefFor(raw, tabOf(s, body.tab || 'shell').id, s.id) : null;
     if (localHref) return json(res, { umbra: raw, href: localHref });
     if (!abs) return fail(res, 400, 'unmappable address', raw.slice(0, 160));
@@ -1184,6 +1195,80 @@ async function route(req, res) {
     const ctx = mkCtx('https://www.youtube.com/watch?v=' + vid, 'c', u.searchParams.get('t'));
     try { return json(res, withVtt(await ytInspect(ctx.url, ctx), ctx), 200, metaHeaders({ kind: 'ytj', videoId: vid })); }
     catch (e) { return fail(res, 502, 'inspect failed', String(e.message || e)); }
+  }
+
+  /* ---- umbra tube: the piped-backed youtube front end ---- */
+  if (head === 'tube') {
+    const tabArg = u.searchParams.get('t');
+    const sub = seg[1] || '';
+    const logical = (p2) => 'umbra://tube' + p2;
+    const render = (ctx, html, logicalUrl) => send(res, 200, {
+      'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+      ...metaHeaders({ kind: 'umbra-tube', view: sub || 'home', tab: ctx.tabId }),
+    }, localDoc(ctx, html, ctx.url, '<style>' + DOC_CSS + TUBE_CSS + '</style>', logicalUrl));
+
+    /* watch: the payload is the same shape the native player capsule uses, so
+       player.js drives playback here unchanged */
+    if (sub === 'watch') {
+      const vid = String(u.searchParams.get('v') || '').slice(0, 20);
+      if (!/^[\w-]{11}$/.test(vid)) return fail(res, 400, 'bad video id', vid);
+      const ctx = mkCtx('https://tube.umbra/watch?v=' + vid, 'd', tabArg);
+      let payload;
+      try {
+        payload = withVtt(await piped.streams(vid, ctx), ctx);
+      } catch (e) {
+        return send(res, 502, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'umbra-tube', view: 'watch-error' }) },
+          localDoc(ctx, tubeError('Could not load that video', e, e.tried), ctx.url,
+            '<style>' + DOC_CSS + TUBE_CSS + '</style>', logical('/watch?v=' + vid)));
+      }
+      /* comments are a nice-to-have: never fail the page over them */
+      let cmts = null;
+      try { cmts = await piped.comments(vid, ctx); } catch { /* omit the section */ }
+      payload = { ...payload, ctx: { origin: ctx.origin, tab: ctx.tabId, key: ctx.key } };
+      const info = ji(payload).replace(/'/g, '&#39;');
+      const html = tubeWatch(payload, info, cmts);
+      const script = fs.readFileSync(path.join(PUB, 'player.js'), 'utf8');
+      return send(res, 200, {
+        'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+        ...metaHeaders({ kind: 'umbra-tube', view: 'watch', tab: ctx.tabId, videoId: vid, instance: payload.instance }),
+      }, localDoc(ctx, html + `<script>${script}<\/script>`, ctx.url,
+        '<style>' + DOC_CSS + TUBE_CSS + capsuleCss + '</style>', logical('/watch?v=' + vid)));
+    }
+
+    if (sub === 'search') {
+      const q = String(u.searchParams.get('q') || '').slice(0, 300).trim();
+      const ctx = mkCtx('https://tube.umbra/search?q=' + encodeURIComponent(q), 'd', tabArg);
+      if (!q) return render(ctx, tubeSearch({ query: '', items: [], tried: [] }), logical('/search?q='));
+      try {
+        return render(ctx, tubeSearch(await piped.search(q, ctx)), logical('/search?q=' + encodeURIComponent(q)));
+      } catch (e) {
+        return render(ctx, tubeError('Search is unavailable', e, e.tried), logical('/search?q=' + encodeURIComponent(q)));
+      }
+    }
+
+    if (sub === 'channel') {
+      const id = String(seg[2] || '').slice(0, 64);
+      const ctx = mkCtx('https://tube.umbra/channel/' + id, 'd', tabArg);
+      try {
+        return render(ctx, tubeChannel(await piped.channel(id, ctx)), logical('/channel/' + id));
+      } catch (e) {
+        return render(ctx, tubeError('Channel unavailable', e, e.tried), logical('/channel/' + id));
+      }
+    }
+
+    /* home: trending */
+    const region = String(u.searchParams.get('region') || 'US').slice(0, 4).toUpperCase();
+    const ctx = mkCtx('https://tube.umbra/', 'd', tabArg);
+    try {
+      return render(ctx, tubeHome(await piped.trending(region, ctx)), logical('/'));
+    } catch (e) {
+      return render(ctx, tubeError('Trending is unavailable', e, e.tried), logical('/'));
+    }
+  }
+
+  /* ---- piped instance health, for the stats surface ---- */
+  if (head === 'tube.health') {
+    return json(res, { instances: piped.instanceHealth() });
   }
 
   /* ---- capsule docs ---- */

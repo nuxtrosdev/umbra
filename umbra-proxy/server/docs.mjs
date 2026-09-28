@@ -70,6 +70,7 @@ export function portalDoc() {
 
   <h2>Start here</h2>
   <div class="grid">
+    ${link('umbra://tube/', 'Umbra Tube', 'YouTube via Piped — no bot gate, streams on the umbra wire')}
     ${link('umbra://lab/index', 'Umbra lab', 'one live fixture per guarantee')}
     ${link('umbra://protocol', 'Protocol notes', 'the scheme, the token, the modes')}
     ${link('umbra://stats', 'Session stats', 'wire requests, bytes, redirect hops')}

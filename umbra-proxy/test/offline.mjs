@@ -459,6 +459,59 @@ async function wire() {
   ok('the off switch is offered in the redirect policy picker',
     /<option value="native">/.test(indexHtml) && /don't intervene/.test(indexHtml), '');
 
+  /* ---- umbra tube: the piped-backed front end ---- */
+  const tubeHref = (await mint('umbra://tube/', 'd', tn.tab)).href;
+  ok('umbra://tube/ mints to a local wire path, no token host leak',
+    tubeHref.startsWith(PFX + 'tube') && !/127\.0\.0\.1|localhost/.test(tubeHref.replace(/[?&]t=[^&]*/, '')), tubeHref);
+  const tubeHome = await call(tubeHref);
+  ok('tube home renders trending from the piped pool',
+    tubeHome.status === 200 && /Mock Trending/.test(tubeHome.text) && /umbra tube/i.test(tubeHome.text),
+    'http ' + tubeHome.status);
+  ok('tube failed over past the dead instance and says which one served',
+    /127\.0\.0\.1:1/.test(tubeHome.text) && new RegExp('via 127\\.0\\.0\\.1:' + MOCK_PORT).test(tubeHome.text));
+  ok('tube thumbnails are wire urls, never the instance directly',
+    /src="\/~umbra\/s\//.test(tubeHome.text) && !/src="http:\/\/127\.0\.0\.1/.test(tubeHome.text));
+
+  const tubeSearch = await call((await mint('umbra://tube/search?q=mock+query', 'd', tn.tab)).href);
+  ok('tube search returns normalised video items only',
+    tubeSearch.status === 200 && /Mock Piped Result/.test(tubeSearch.text) && !/not a video/.test(tubeSearch.text));
+
+  const tubeWatch = await call((await mint(`umbra://tube/watch?v=${VID}`, 'd', tn.tab)).href);
+  ok('tube watch page renders with the player payload',
+    tubeWatch.status === 200 && /Mock Piped Video/.test(tubeWatch.text) && /id="player"/.test(tubeWatch.text),
+    'http ' + tubeWatch.status);
+  ok('tube watch classifies muxed / video-only / audio from piped streams',
+    /1 muxed/.test(tubeWatch.text) && /1 video/.test(tubeWatch.text) && /1 audio/.test(tubeWatch.text));
+  ok('tube watch carries comments and related videos',
+    /a mock comment/.test(tubeWatch.text) && /Related One/.test(tubeWatch.text));
+  /* the payload must be the same shape the native capsule uses, so player.js
+     drives both surfaces unchanged */
+  const tubeInfo = JSON.parse((/data-info='([^']+)'/.exec(tubeWatch.text) || [])[1].replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+  ok('tube payload matches the native player payload contract',
+    tubeInfo.ok === true && tubeInfo.source === 'piped' &&
+    Array.isArray(tubeInfo.muxed) && tubeInfo.muxed[0].wire.startsWith('/~umbra/m/') &&
+    Array.isArray(tubeInfo.captions) && typeof tubeInfo.captions[0].vtt === 'string',
+    'muxed=' + tubeInfo.muxed.length + ' caps=' + tubeInfo.captions.length);
+  const tubeStream = await call(tubeInfo.muxed[0].wire, { headers: { range: 'bytes=0-99' } });
+  ok('tube stream bytes flow through the umbra media wire with Range',
+    tubeStream.status === 206 && tubeStream.bytes.length === 100, tubeStream.status + '/' + tubeStream.bytes.length);
+  const tubeVtt = await call(tubeInfo.captions[0].vtt);
+  ok('tube captions convert to WebVTT through the proxy',
+    /^WEBVTT/.test(tubeVtt.text) && /hello world/.test(tubeVtt.text));
+
+  const tubeChan = await call((await mint('umbra://tube/channel/UCmock', 'd', tn.tab)).href);
+  ok('tube channel page renders uploads', tubeChan.status === 200 && /Channel Upload/.test(tubeChan.text) && /Mock Channel/.test(tubeChan.text));
+
+  const tubeBad = await call((await mint('umbra://tube/watch?v=short', 'd', tn.tab)).href);
+  ok('tube rejects a malformed video id', tubeBad.status === 400, 'http ' + tubeBad.status);
+  const health = JSON.parse((await call('/~umbra/tube.health')).text);
+  ok('instance health reports the benched instance and the preferred one',
+    health.instances.some((i) => /:1$/.test(i.instance) && i.benchedFor > 0) &&
+    health.instances.some((i) => i.preferred && new RegExp(':' + MOCK_PORT + '$').test(i.instance)),
+    JSON.stringify(health.instances));
+  ok('the portal links into the tube section',
+    /umbra:\/\/tube\//.test((await call((await mint('umbra://home/', 'd', tn.tab)).href)).text));
+
   /* ---- burn revokes everything ---- */
   const preBurn = await mint(MOCK + '/page2', 'd', tn.tab);
   ok('burn wipes jar and tabs', /"ok":1/.test((await call('/~umbra/burn')).text));
@@ -483,6 +536,9 @@ async function wire() {
        exercises the ladder *falling through* rather than succeeding on the
        first try. The production default order is asserted in unit(). */
     UMBRA_YT_CLIENTS: 'web,visionos',
+    /* a dead instance first, so the suite exercises pool failover rather than
+       a lucky first hit; 127.0.0.1:1 always refuses the connection */
+    UMBRA_PIPED_INSTANCES: `http://127.0.0.1:1,http://127.0.0.1:${MOCK_PORT}`,
   });
   for (const [k, n] of [[mock, 'mock'], [origin, 'origin']]) {
     k.stderr.on('data', (d) => process.stderr.write(`[${n}] ${d}`));
