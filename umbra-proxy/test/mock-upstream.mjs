@@ -128,6 +128,40 @@ const CSS = `body{background:url('/photo.jpg')}
 @import "/more.css";
 ul{list-style:url('http://localhost:${PORT}/photo.jpg')}`;
 
+/* ---- anti-bot fixtures -------------------------------------------------
+   The mock plays the part of a *gating* YouTube: it records the InnerTube
+   client identity each POST presents and only hands real stream URLs to the
+   clients that are not under the PO-token regime. That makes the client
+   ladder and the visitor-identity reuse observable offline. */
+
+/** A structurally genuine visitorData: 0x0a 0x0b + 11-char id + timestamp. */
+function mockVisitorData() {
+  const id = 'CgtMOCK1d2FyZQ'.slice(0, 11);
+  const buf = Buffer.concat([
+    Buffer.from([0x0a, 0x0b]),
+    Buffer.from(id, 'ascii'),
+    Buffer.from([0x28, 0xd0, 0x0f]),
+  ]);
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+const MOCK_VISITOR = mockVisitorData();
+
+/* Clients the mock treats as PO-token gated: they get a format list with the
+   urls stripped, exactly like the real thing does to a datacenter IP. */
+const GATED_CLIENTS = new Set(['WEB', 'ANDROID_VR', 'MWEB', 'WEB_CREATOR']);
+
+/** Every InnerTube POST the mock saw, for assertions in the offline suite. */
+export const hits = [];
+const HITS = hits;
+
+function stripUrls(pr) {
+  const out = JSON.parse(JSON.stringify(pr));
+  for (const list of ['formats', 'adaptiveFormats']) {
+    for (const f of out.streamingData[list] || []) delete f.url;
+  }
+  return out;
+}
+
 function send(res, status, headers, body) {
   const buf = body == null ? Buffer.alloc(0) : Buffer.isBuffer(body) ? body : Buffer.from(String(body));
   res.writeHead(status, { 'content-length': buf.length, ...headers });
@@ -268,6 +302,7 @@ const server = http.createServer((req, res) => {
     return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({ cookies: jar }));
   }
   if (p === '/watch') {
+    HITS.push({ path: p, method: req.method });
     const html = `<!doctype html><html><head><title>Mock Video Title - MockTube</title></head><body>` +
       `<div id="player"></div><script>var ytInitialPlayerResponse = ${JSON.stringify(playerResponse(base))};</script>` +
       `<a href="/watch?v=${VID}">self</a><img src="/thumb.jpg">` +
@@ -281,11 +316,25 @@ const server = http.createServer((req, res) => {
       `<a href="/watch?v=${VID}">Mock Video Title</a></body></html>`);
   }
   if (p.startsWith('/embed/')) {
+    HITS.push({ path: p, method: req.method });
+    /* carries a ytcfg like the real embed document, but deliberately no
+       ytInitialPlayerResponse, so the client ladder has to do the work */
     return send(res, 200, {
       'content-type': 'text/html; charset=utf-8',
       'x-frame-options': 'SAMEORIGIN',
       'content-security-policy': "frame-ancestors 'self'",
-    }, `<!doctype html><html><head><title>embed</title></head><body><div id="mock-embed">embed for ${p.slice(7)}</div></body></html>`);
+    }, `<!doctype html><html><head><title>embed</title>` +
+      `<script>ytcfg.set({"INNERTUBE_API_KEY":"MOCK_EMBED_KEY","INNERTUBE_CLIENT_VERSION":"2.20260708.00.00","VISITOR_DATA":"${MOCK_VISITOR}"});</script>` +
+      `</head><body><div id="mock-embed">embed for ${p.slice(7)}</div></body></html>`);
+  }
+  /* service-worker data blob: where a genuine visitorData is minted from */
+  if (p === '/sw.js_data') {
+    HITS.push({ path: p, method: req.method });
+    return send(res, 200, { 'content-type': 'text/plain; charset=utf-8' },
+      `)]}'\n[[["mock",["${MOCK_VISITOR}"],1]]]`);
+  }
+  if (p === '/__hits') {
+    return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(HITS));
   }
   if (p === '/cap-en') {
     return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
@@ -298,7 +347,28 @@ const server = http.createServer((req, res) => {
   if (p === '/youtubei/v1/player') {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
-    return req.on('end', () => send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(playerResponse(base))));
+    return req.on('end', () => {
+      let body = {};
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { /* record anyway */ }
+      const client = ((body.context || {}).client) || {};
+      HITS.push({
+        path: p,
+        method: req.method,
+        clientName: client.clientName || null,
+        clientVersion: client.clientVersion || null,
+        visitorData: client.visitorData || null,
+        visitorHeader: req.headers['x-goog-visitor-id'] || null,
+        clientNameHeader: req.headers['x-youtube-client-name'] || null,
+        embedUrl: ((body.context || {}).thirdParty || {}).embedUrl || null,
+        ua: req.headers['user-agent'] || null,
+      });
+      const pr = playerResponse(base);
+      /* gated clients get the stripped-url treatment; others get real urls */
+      if (GATED_CLIENTS.has(client.clientName)) {
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(stripUrls(pr)));
+      }
+      return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(pr));
+    });
   }
   res.writeHead(404, { 'content-type': 'text/plain' });
   res.end('mock missing');
