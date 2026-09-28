@@ -417,6 +417,48 @@ async function wire() {
     /navigationPending/.test(shim.text) && /stable >= 6/.test(shim.text) && /ticks > 60/.test(shim.text));
   ok('sandbox omits top-navigation and popups', /allow-scripts allow-same-origin/.test(shellJs) && !/allow-top-navigation/.test(shellJs) && !/allow-popups(?!-)/.test(shellJs));
 
+  /* ---- redirect policy: the off switch + the reload-loop guard ---- */
+  const bootPol = JSON.parse((await call('/~umbra/boot')).text);
+  ok('boot reports the redirect policy so the shell can honour it',
+    bootPol.policy && bootPol.policy.follow === 'all', JSON.stringify(bootPol.policy));
+  const XHOST = `${MOCK}/redirect-to?url=${encodeURIComponent(MOCK_ALT + '/other')}&status_code=302`;
+  const setNative = JSON.parse((await call('/~umbra/policy', J({ follow: 'native' }))).text);
+  ok('redirect policing can be switched off', setNative.policy?.follow === 'native', JSON.stringify(setNative.policy));
+  /* with policing off a cross-host hop must be followed, not held for review */
+  const nativeHop = await call((await mint(XHOST, 'd', tn.tab)).href);
+  ok('policy=native follows a cross-host hop instead of holding it',
+    nativeHop.status === 200 && /other host doc/.test(nativeHop.text) && !/redirect held/i.test(nativeHop.text),
+    'http ' + nativeHop.status);
+  /* even the hold-every-hop case collapses once policing is off */
+  const nativeSame = await call((await mint(`${MOCK}/redirect/2`, 'd', tn.tab)).href);
+  ok('policy=native never holds a same-host chain either',
+    /chain end/.test(nativeSame.text) && !/redirect held/i.test(nativeSame.text));
+  /* and the strict policies still hold, so the switch is a real switch */
+  await call('/~umbra/policy', J({ follow: 'none' }));
+  const heldHop = await call((await mint(XHOST, 'd', tn.tab)).href);
+  ok('policy=none still holds every hop for review',
+    /redirect held/i.test(heldHop.text), 'http ' + heldHop.status);
+  await call('/~umbra/policy', J({ follow: 'all' }));
+  ok('an unknown follow value is rejected rather than silently applied',
+    JSON.parse((await call('/~umbra/policy', J({ follow: 'bogus' }))).text).policy?.follow === 'all');
+
+  ok('shell mirrors the policy and stops policing when it is off',
+    /policeOff\s*=\s*\(\)\s*=>\s*S\.policy\.follow === 'native'/.test(shellJs) &&
+    /if \(policeOff\(\)\) \{/.test(shellJs) && /was NOT reverted/.test(shellJs));
+  ok('adoption ledger is time-windowed and survives a healthy sync',
+    /ADOPT_WINDOW/.test(shellJs) && /ADOPT_MAX/.test(shellJs) &&
+    /function adoptAllowed/.test(shellJs) &&
+    /if \(!adoptAllowed\(t, adopted\)\)/.test(shellJs));
+  ok('only fresh user intent clears the adoption ledger',
+    /if \(opts\.fresh\) \{ t\.fails = 0; t\.adopts = \[\]; \}/.test(shellJs) &&
+    !/syncFromFrame[\s\S]{0,600}t\.adopts = \[\]/.test(shellJs));
+  ok('the loop guard terminates instead of re-navigating',
+    /function stopFollowing/.test(shellJs) &&
+    /stopped following/.test(shellJs) && /keeps redirecting itself/.test(shellJs));
+  const indexHtml = (await call('/')).text;
+  ok('the off switch is offered in the redirect policy picker',
+    /<option value="native">/.test(indexHtml) && /don't intervene/.test(indexHtml), '');
+
   /* ---- burn revokes everything ---- */
   const preBurn = await mint(MOCK + '/page2', 'd', tn.tab);
   ok('burn wipes jar and tabs', /"ok":1/.test((await call('/~umbra/burn')).text));

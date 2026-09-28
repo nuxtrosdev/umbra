@@ -246,9 +246,12 @@ function holdRedirect(ctx, res, from, to, status, mode, chain) {
   const policy = ctx.policy.follow;
 
   if (!doc) return false;                                     // subresources: follow
+  /* 'native' is the off switch: Umbra stops interposing on navigation and
+     behaves like a plain browser — every hop is followed, nothing is held,
+     and the shell never reverts the frame (see shell.js). */
+  if (policy === 'native') return false;
   if (policy === 'all') return false;                          // user asked to collapse
   if (sameHost && policy === 'same-host') return false;       // scheme/slash normalisation
-  if (sameHost && policy === 'none' && false) return false;
 
   ctx.sessionObj && ctx.sessionObj.held++;
   const tok = encodeToken({ u: to, t: ctx.tabId, s: ctx.session, g: ctx.gen, m: 'd' });
@@ -1048,7 +1051,7 @@ async function route(req, res) {
     let id = sid && sessions.has(sid) ? sid : newSession();
     session(id);
     res.setHeader('set-cookie', `${COOKIE_NAME}=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200`);
-    return json(res, { session: id, protocol: 'umbra/1', modes: [...MODES], portal: PORTAL, ts: Date.now() });
+    return json(res, { session: id, protocol: 'umbra/1', modes: [...MODES], portal: PORTAL, policy: session(id).policy, ts: Date.now() });
   }
   if (!s) return fail(res, 401, 'no umbra session', 'GET /~umbra/boot first');
 
@@ -1086,7 +1089,7 @@ async function route(req, res) {
   }
   if (head === 'policy') {
     const body = req.method === 'POST' ? JSON.parse((await readReq(req)).toString('utf8') || '{}') : {};
-    if (['same-host', 'all', 'none'].includes(body.follow)) s.policy.follow = body.follow;
+    if (['same-host', 'all', 'none', 'native'].includes(body.follow)) s.policy.follow = body.follow;
     if (['none', 'origin', 'full'].includes(body.referrer)) s.policy.referrer = body.referrer;
     if (typeof body.ephemeral === 'number') s.policy.ephemeral = body.ephemeral ? 1 : 0;
     return json(res, { policy: s.policy });
