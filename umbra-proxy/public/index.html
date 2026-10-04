@@ -49,9 +49,10 @@
     </div>
 
     <div class="navgroup pols">
-      <label class="sel" title="How redirects are treated — like a browser by default">redirects
+      <label class="sel" title="How redirects are treated — like a browser by default. 'off' stops Umbra interposing at all: nothing is held and the frame is never reverted, which cures reload loops on sites that re-navigate themselves, at the cost of letting a page leave Umbra.">redirects
         <select id="polRedirect">
           <option value="all" selected>follow all</option>
+          <option value="native">off — don't intervene</option>
           <option value="same-host">hold cross-host</option>
           <option value="none">hold every hop</option>
         </select>

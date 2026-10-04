@@ -1,12 +1,15 @@
 {
-  "name": "user",
+  "name": "umbra",
   "version": "1.0.0",
-  "main": "index.js",
+  "private": true,
+  "type": "module",
+  "main": "umbra-proxy/server/index.mjs",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node umbra-proxy/server/index.mjs",
+    "test": "node umbra-proxy/test/offline.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": ""
+  "description": "a web proxy"
 }

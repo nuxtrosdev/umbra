@@ -21,10 +21,31 @@ import {
 import { upstream, readBody, outboundHeaders, CookieJar, UA } from './net.mjs';
 import { rewriteHtml, rewriteCssUrls, injectShim, decodeHtml } from './html.mjs';
 import { inspect as ytInspect, isYouTube, parseVideoId } from './youtube.mjs';
+import {
+  isInnertubeUrl,
+  rewriteInnertubeBody,
+  buildHeaders as itHeaders,
+  getVisitorData,
+  LADDER as IT_LADDER,
+} from './innertube.mjs';
 import { portalDoc, labIndexDoc, helpDoc, statsDoc, DOC_CSS } from './docs.mjs';
+import * as piped from './piped.mjs';
+import * as pipedLocal from './piped-local.mjs';
+import * as ytApi from './api-youtube.mjs';
+import * as pm from './provider-manager.mjs';
+import * as tubeView from './tube-view.mjs';
+import { TUBE_CSS, ADMIN_CSS, providersDoc, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.join(HERE, '..', 'public');
+/* Serve the built-in Piped instance to callers with no Umbra session, i.e. act
+   as a public Piped API. Off by default: it is outbound extraction on your
+   address for anyone who can reach this origin. */
+const PIPED_PUBLIC = /^(1|true|yes)$/i.test(String(process.env.UMBRA_PIPED_PUBLIC || ''));
+/* Serve /api/youtube to callers without an Umbra session. Off by default for
+   the same reason as the Piped door: it spends our egress on the caller's
+   behalf. */
+const API_PUBLIC = /^(1|true|yes)$/i.test(String(process.env.UMBRA_API_PUBLIC || ''));
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.UMBRA_HOST || '0.0.0.0';
 const DOC_HOPS = 6;
@@ -239,9 +260,12 @@ function holdRedirect(ctx, res, from, to, status, mode, chain) {
   const policy = ctx.policy.follow;
 
   if (!doc) return false;                                     // subresources: follow
+  /* 'native' is the off switch: Umbra stops interposing on navigation and
+     behaves like a plain browser — every hop is followed, nothing is held,
+     and the shell never reverts the frame (see shell.js). */
+  if (policy === 'native') return false;
   if (policy === 'all') return false;                          // user asked to collapse
   if (sameHost && policy === 'same-host') return false;       // scheme/slash normalisation
-  if (sameHost && policy === 'none' && false) return false;
 
   ctx.sessionObj && ctx.sessionObj.held++;
   const tok = encodeToken({ u: to, t: ctx.tabId, s: ctx.session, g: ctx.gen, m: 'd' });
@@ -351,9 +375,9 @@ async function serve(ctx, req, res, opts = {}) {
      locally and never reaches a resolver. */
   {
     const hm = /^(https?:\/\/)([^/:]+)(:\d+)?(\/.*|)$/i.exec(url);
-    if (hm && /^(lab|portal|help|stats|home)$/i.test(hm[2])) url = hm[1] + hm[2] + '.umbra' + (hm[3] || '') + hm[4];
+    if (hm && /^(lab|portal|help|stats|home|tube)$/i.test(hm[2])) url = hm[1] + hm[2] + '.umbra' + (hm[3] || '') + hm[4];
   }
-  if (/^https?:\/\/([a-z0-9-]+\.)?umbra\b/i.test(url) && !/^https?:\/\/(lab|portal|help|stats)\.umbra/i.test(url)) {
+  if (/^https?:\/\/([a-z0-9-]+\.)?umbra\b/i.test(url) && !/^https?:\/\/(lab|portal|help|stats|tube)\.umbra/i.test(url)) {
     return send(res, 404, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'umbra-404', url }) },
       errPage(ctx, url, 'no umbra resource at that logical address', []));
   }
@@ -434,6 +458,35 @@ async function serve(ctx, req, res, opts = {}) {
     if (upBody) {
       headers['content-type'] = upCt || 'application/x-www-form-urlencoded';
       headers['content-length'] = String(upBody.length);
+    }
+
+    /* ---- InnerTube interception -----------------------------------------
+       The embedded player mints its own /youtubei/v1/* POSTs from page JS,
+       and those carry the browser's WEB client identity — the one under the
+       full PO-token regime. Rewrite the context in flight so in-page RPCs
+       present the same client the inspect ladder settled on, with the same
+       reused visitor identity. Non-InnerTube POSTs are untouched. */
+    if (upBody && upMethod === 'POST' && isInnertubeUrl(url)) {
+      try {
+        const vis = await getVisitorData({ cookie: headers.cookie || '' });
+        const src = Buffer.isBuffer(upBody) ? upBody : Buffer.from(String(upBody));
+        const rewritten = rewriteInnertubeBody(src, {
+          client: IT_LADDER[0],
+          visitorData: vis.value,
+        });
+        if (rewritten) {
+          upBody = rewritten;
+          upCt = 'application/json';
+          Object.assign(headers, itHeaders(IT_LADDER[0], {
+            visitorData: vis.value,
+            videoId: '',
+            cookie: headers.cookie || '',
+          }));
+          headers['content-length'] = String(upBody.length);
+        }
+      } catch {
+        /* identity minting is best-effort; forward the original body */
+      }
     }
 
     for (const k of Object.keys(headers)) if (headers[k] == null || headers[k] === '') delete headers[k];
@@ -636,6 +689,7 @@ function localAddressToUrl(raw) {
   if (/^umbra:\/\/protocol(\/|\?|$)/i.test(s)) return 'https://portal.umbra/help';
   if (/^umbra:\/\/(portal|home)(\/|\?|$)/i.test(s)) return 'https://portal.umbra/home';
   if (/^umbra:\/\/lab/.test(s)) return 'https://lab.umbra/' + s.slice('umbra://lab'.length).replace(/^\//, '');
+  if (/^umbra:\/\/tube(\/|\?|$)/i.test(s)) return 'https://tube.umbra/' + s.slice('umbra://tube'.length).replace(/^\//, '');
   if (/^umbra:\/\/search\//.test(s)) {
     const q = new URL(s.replace('umbra://search/', 'https://search.umbra/')).searchParams.get('q');
     return 'https://portal.umbra/search?q=' + encodeURIComponent(q || '');
@@ -651,6 +705,12 @@ function localHrefFor(raw, tabId, sid) {
   if (u.startsWith('https://lab.umbra/')) {
     const key = /^https:\/\/lab\.umbra\/([\w-]+)/.exec(u)[1];
     return PFX + 'lab/' + key + tail;
+  }
+  if (u.startsWith('https://tube.umbra/')) {
+    const rest = u.slice('https://tube.umbra/'.length);
+    const [pth, qs] = rest.split('?');
+    return PFX + 'tube' + (pth ? '/' + pth : '') + '?' + (qs ? qs + '&' : '') +
+      't=' + encodeURIComponent(tabId) + (sid ? '&sid=' + encodeURIComponent(sid) : '');
   }
   if (u.startsWith('https://portal.umbra/search')) {
     const qs = u.slice(u.indexOf('?'));
@@ -916,13 +976,26 @@ ${payload.ok
        <span class="kicker" style="margin:0 8px 0 0">${payload.video.length} video tracks</span>
        <span class="kicker" style="margin:0 8px 0 0">${payload.audio.length} audio tracks</span>
        <span class="kicker" style="margin:0 8px 0 0">${payload.captions.length} caption track(s)</span></p>`
-    : `<p class="warn">Upstream delivered formats with the stream URLs removed (${esc(payload.reason || 'blocked')}),
-       which is Google's bot gate on this egress address. Umbra therefore falls back to the proxied embed document.
-       On a residential egress IP the native path is used automatically.</p>`}
+    : `<p class="warn">No fetchable stream: ${esc(payload.reason || 'blocked')}.
+       Umbra falls back to the proxied embed document.</p>
+       <p class="muted">Tried ${(payload.attempts || []).length} InnerTube client(s):
+       ${esc((payload.attempts || []).map((a) => a.client + ' → ' + (a.ok ? 'ok' : a.note || a.status)).join('; ')) || 'none'}.
+       Visitor identity: ${esc(payload.visitorSource || 'none')}${payload.visitorSynthetic ? ' (synthetic — could not mint a real one)' : ''}.
+       Client order is set by UMBRA_YT_CLIENTS. A PO-token gate on every client is an egress-IP reputation
+       problem that client choice cannot fix; the native path returns on a residential egress.</p>
+       <p><a class="btn" href="umbra://tube/watch?v=${esc(payload.videoId)}">watch it through Umbra Tube instead</a>
+       <span class="muted"> — a Piped instance extracts on its egress, not yours.</span></p>`}
 <div id="player" data-info='${ji(payload).replace(/'/g, '&#39;')}'></div>`;
   const script = fs.readFileSync(path.join(PUB, 'player.js'), 'utf8');
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- NOT no-referrer. This capsule can fall back to YouTube's embedded
+     player, and that player validates the embed against the Referer it
+     receives: with none, it refuses with "Error 153 — video player
+     configuration error" and shows nothing. strict-origin-when-cross-origin
+     sends the origin only, which satisfies the check without leaking the
+     path or query of whatever the viewer was watching. -->
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>umbra player · ${esc(payload.title || payload.videoId)}</title><style>${capsuleCss}
 #player{margin-top:12px}
 .ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
@@ -944,6 +1017,9 @@ const STATIC = {
   '/shell.css': ['shell.css', 'text/css; charset=utf-8'],
   '/shell.js': ['shell.js', 'application/javascript; charset=utf-8'],
   '/~umbra/shim.js': ['shim.js', 'application/javascript; charset=utf-8'],
+  /* loaded by the generated worker bootstrap, so it must be reachable
+     without a per-frame token: it carries no data, only the rewriter */
+  '/~umbra/a/worker-shim.js': ['worker-shim.js', 'application/javascript; charset=utf-8'],
   '/~umbra/player.js': ['player.js', 'application/javascript; charset=utf-8'],
 };
 function serveStatic(res, key) {
@@ -981,6 +1057,30 @@ async function route(req, res) {
   const p = decodeURIComponent(u.pathname);
   const origin = originOf(req);
 
+  /* ---- the unified YouTube metadata API -------------------------------
+     Lives at a plain /api/youtube path rather than under the wire prefix
+     because it is an ordinary JSON API for the frontend, not a proxied
+     resource. The browser only ever talks to this origin; every upstream
+     request to Invidious, Piped and the rest is made by the server, so an
+     instance blocked on the user's network is still reachable for us.
+
+     Metadata only. No media bytes pass through here. */
+  if (p === '/api/youtube' || p.startsWith('/api/youtube/')) {
+    if (!API_PUBLIC && !session(readSession(req))) {
+      return json(res, {
+        ok: false,
+        error: { code: 'NO_SESSION', message: 'This API is session-only.' },
+        meta: { hint: 'GET /~umbra/boot first, or set UMBRA_API_PUBLIC=1' },
+      }, 401);
+    }
+    const { status, body } = await ytApi.handle(
+      p.slice('/api/youtube'.length), u.searchParams, { method: req.method });
+    return json(res, body, status, metaHeaders({
+      kind: 'youtube-api',
+      provider: (body.meta && body.meta.provider) || null,
+    }));
+  }
+
   if (!p.startsWith(PFX)) {
     if (STATIC[p] && req.method === 'GET') return serveStatic(res, p);
     return notFound(res, p);
@@ -1008,8 +1108,36 @@ async function route(req, res) {
     let id = sid && sessions.has(sid) ? sid : newSession();
     session(id);
     res.setHeader('set-cookie', `${COOKIE_NAME}=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200`);
-    return json(res, { session: id, protocol: 'umbra/1', modes: [...MODES], portal: PORTAL, ts: Date.now() });
+    return json(res, { session: id, protocol: 'umbra/1', modes: [...MODES], portal: PORTAL, policy: session(id).policy, ts: Date.now() });
   }
+  /* ---- Umbra's own Piped instance, spoken over the real REST surface ----
+     Same shapes as any public instance, so an external Piped client (or
+     another Umbra) can be pointed at this origin.
+
+     Sits ahead of the session gate because a third-party Piped client has no
+     Umbra session -- but it stays shut unless UMBRA_PIPED_PUBLIC is set. This
+     is the only surface that would drive outbound extraction for an
+     unauthenticated caller, so opening it is a deliberate act rather than a
+     default. The internal pool does not need it open: piped.mjs calls the
+     same handler in-process. */
+  if (head === 'piped') {
+    if (!s && !PIPED_PUBLIC) {
+      return fail(res, 401, 'piped api is session-only',
+        'set UMBRA_PIPED_PUBLIC=1 to serve this instance to external clients');
+    }
+    const sub = '/' + seg.slice(1).join('/');
+    try {
+      const out = await pipedLocal.handle(sub, u.searchParams);
+      return json(res, out, 200, metaHeaders({ kind: 'piped-api', endpoint: sub }));
+    } catch (e) {
+      return json(res, {
+        error: String(e.message || e),
+        /* which clients were tried, when the failure came from extraction */
+        tried: e.tried || undefined,
+      }, e.status === 404 ? 404 : 502, metaHeaders({ kind: 'piped-api-error', endpoint: sub }));
+    }
+  }
+
   if (!s) return fail(res, 401, 'no umbra session', 'GET /~umbra/boot first');
 
   const mkCtx = (url, mode, tabId) => {
@@ -1046,7 +1174,7 @@ async function route(req, res) {
   }
   if (head === 'policy') {
     const body = req.method === 'POST' ? JSON.parse((await readReq(req)).toString('utf8') || '{}') : {};
-    if (['same-host', 'all', 'none'].includes(body.follow)) s.policy.follow = body.follow;
+    if (['same-host', 'all', 'none', 'native'].includes(body.follow)) s.policy.follow = body.follow;
     if (['none', 'origin', 'full'].includes(body.referrer)) s.policy.referrer = body.referrer;
     if (typeof body.ephemeral === 'number') s.policy.ephemeral = body.ephemeral ? 1 : 0;
     return json(res, { policy: s.policy });
@@ -1091,7 +1219,7 @@ async function route(req, res) {
       return json(res, { umbra: raw, href: PFX + 'c/' + tok + '/player.html' });
     }
     const abs = localAddressToUrl(raw) || resolveRef(raw, 'https://invalid.umbra/');
-    const localHref = /^umbra:\/\/(portal|home|help|stats|protocol|lab|search)(\/|\?|$)/i.test(raw)
+    const localHref = /^umbra:\/\/(portal|home|help|stats|protocol|lab|search|tube)(\/|\?|$)/i.test(raw)
       ? localHrefFor(raw, tabOf(s, body.tab || 'shell').id, s.id) : null;
     if (localHref) return json(res, { umbra: raw, href: localHref });
     if (!abs) return fail(res, 400, 'unmappable address', raw.slice(0, 160));
@@ -1141,6 +1269,105 @@ async function route(req, res) {
     const ctx = mkCtx('https://www.youtube.com/watch?v=' + vid, 'c', u.searchParams.get('t'));
     try { return json(res, withVtt(await ytInspect(ctx.url, ctx), ctx), 200, metaHeaders({ kind: 'ytj', videoId: vid })); }
     catch (e) { return fail(res, 502, 'inspect failed', String(e.message || e)); }
+  }
+
+  /* ---- umbra tube: the piped-backed youtube front end ---- */
+  if (head === 'tube') {
+    const tabArg = u.searchParams.get('t');
+    const sub = seg[1] || '';
+    const logical = (p2) => 'umbra://tube' + p2;
+    const render = (ctx, html, logicalUrl) => send(res, 200, {
+      'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+      ...metaHeaders({ kind: 'umbra-tube', view: sub || 'home', tab: ctx.tabId }),
+    }, localDoc(ctx, html, ctx.url, '<style>' + DOC_CSS + TUBE_CSS + '</style>', logicalUrl));
+
+    /* watch: the payload is the same shape the native player capsule uses, so
+       player.js drives playback here unchanged */
+    if (sub === 'watch') {
+      const vid = String(u.searchParams.get('v') || '').slice(0, 20);
+      if (!/^[\w-]{11}$/.test(vid)) return fail(res, 400, 'bad video id', vid);
+      const ctx = mkCtx('https://tube.umbra/watch?v=' + vid, 'd', tabArg);
+      let payload;
+      try {
+        /* streams decide whether the page can exist at all; title/author and
+           the related rail are enrichment, so they are allowed to fail
+           without taking the player down with them */
+        const streams = await pm.getStreams(vid);
+        const [video, related] = await Promise.all([
+          pm.getVideo(vid).catch(() => null),
+          pm.getRecommendations(vid).catch(() => null),
+        ]);
+        payload = withVtt(tubeView.toWatchPayload({ streams, video, related }, ctx, vid), ctx);
+      } catch (e) {
+        return send(res, 502, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'umbra-tube', view: 'watch-error' }) },
+          localDoc(ctx, tubeError('Could not load that video', e, e.tried), ctx.url,
+            '<style>' + DOC_CSS + TUBE_CSS + '</style>', logical('/watch?v=' + vid)));
+      }
+      /* comments are a nice-to-have: never fail the page over them */
+      let cmts = null;
+      try { cmts = tubeView.toCommentsView(await pm.getComments(vid), ctx); } catch { /* omit the section */ }
+      payload = { ...payload, ctx: { origin: ctx.origin, tab: ctx.tabId, key: ctx.key } };
+      const info = ji(payload).replace(/'/g, '&#39;');
+      const html = tubeWatch(payload, info, cmts);
+      const script = fs.readFileSync(path.join(PUB, 'player.js'), 'utf8');
+      return send(res, 200, {
+        'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+        ...metaHeaders({ kind: 'umbra-tube', view: 'watch', tab: ctx.tabId, videoId: vid, instance: payload.instance }),
+      }, localDoc(ctx, html + `<script>${script}<\/script>`, ctx.url,
+        '<style>' + DOC_CSS + TUBE_CSS + capsuleCss + '</style>', logical('/watch?v=' + vid)));
+    }
+
+    if (sub === 'search') {
+      const q = String(u.searchParams.get('q') || '').slice(0, 300).trim();
+      const ctx = mkCtx('https://tube.umbra/search?q=' + encodeURIComponent(q), 'd', tabArg);
+      if (!q) return render(ctx, tubeSearch({ query: '', items: [], tried: [] }), logical('/search?q='));
+      try {
+        const r = await pm.search(q, { limit: 40 });
+        return render(ctx, tubeSearch(tubeView.toSearchView({ ...r, query: q }, ctx)),
+          logical('/search?q=' + encodeURIComponent(q)));
+      } catch (e) {
+        return render(ctx, tubeError('Search is unavailable', e, e.tried), logical('/search?q=' + encodeURIComponent(q)));
+      }
+    }
+
+    if (sub === 'channel') {
+      const id = String(seg[2] || '').slice(0, 64);
+      const ctx = mkCtx('https://tube.umbra/channel/' + id, 'd', tabArg);
+      try {
+        return render(ctx, tubeChannel(tubeView.toChannelView(await pm.getChannel(id), ctx)),
+          logical('/channel/' + id));
+      } catch (e) {
+        return render(ctx, tubeError('Channel unavailable', e, e.tried), logical('/channel/' + id));
+      }
+    }
+
+    /* home: trending */
+    const region = String(u.searchParams.get('region') || 'US').slice(0, 4).toUpperCase();
+    const ctx = mkCtx('https://tube.umbra/', 'd', tabArg);
+    try {
+      const r = await pm.trending(region);
+      return render(ctx, tubeHome(tubeView.toTrendingView(r, ctx, region)), logical('/'));
+    } catch (e) {
+      return render(ctx, tubeError('Trending is unavailable', e, e.tried), logical('/'));
+    }
+  }
+
+  /* ---- piped instance health, for the stats surface ---- */
+  if (head === 'tube.health') {
+    return json(res, { instances: piped.instanceHealth() });
+  }
+
+  /* ---- provider diagnostics, rendered for humans ----
+     The same data as /api/youtube/providers/health, laid out as a table so
+     "which backend is answering and why" is one page rather than a jq
+     incantation. */
+  if (head === 'providers') {
+    const ctx = mkCtx('https://providers.umbra/', 'd', u.searchParams.get('t'));
+    return send(res, 200, {
+      'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+      ...metaHeaders({ kind: 'umbra-providers' }),
+    }, localDoc(ctx, providersDoc(pm.health(), ytApi.ENDPOINTS), ctx.url,
+      '<style>' + DOC_CSS + TUBE_CSS + ADMIN_CSS + '</style>', 'umbra://providers/'));
   }
 
   /* ---- capsule docs ---- */

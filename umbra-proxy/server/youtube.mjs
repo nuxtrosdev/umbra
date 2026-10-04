@@ -11,19 +11,33 @@
  * stripped. When that happens the response is reported as `blocked` and the
  * player falls back to the Umbra-proxied embed document (framing headers are
  * removed by the proxy, so it renders inside the tab system anyway).
+ *
+ * Anti-bot posture (see innertube.mjs for the reasoning in full):
+ *   - config comes from the /embed/ document, never /watch, because the embed
+ *     surface is built to be loaded by third-party sites and is challenged
+ *     far more loosely than the watch page;
+ *   - stream data comes from a *ladder* of InnerTube client identities, tried
+ *     until one returns formats we can actually fetch bytes for;
+ *   - one visitor identity is minted per egress and reused, rather than
+ *     randomised per request.
  */
 import { upstream, readBody } from './net.mjs';
 import { href } from './protocol.mjs';
+import {
+  LADDER,
+  CLIENTS,
+  getVisitorData,
+  playerRequest,
+} from './innertube.mjs';
 
 const YT_HOSTS = new Set([
   'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com',
   'youtu.be', 'www.youtu.be', 'youtube.googleapis.com', 'gaming.youtube.com',
 ]);
 
-/* Test hook: the offline suite points watch-page fetches at the mock upstream.
+/* Test hook: the offline suite points YouTube fetches at the mock upstream.
    Unset in every real deployment, where this is exactly www.youtube.com. */
 const YT_BASE = (process.env.UMBRA_YT_BASE || 'https://www.youtube.com').replace(/\/$/, '');
-const YT_ORIGIN = YT_BASE + '/';
 
 export function isYouTube(url) {
   try {
@@ -133,21 +147,53 @@ function playable(f, kind) {
   };
 }
 
+/** Does this player response carry at least one directly fetchable stream? */
+function hasUsableStreams(pr) {
+  const sd = (pr && pr.streamingData) || {};
+  const all = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
+  return all.some((f) => {
+    const p = playable(f, null);
+    return p && p.url;
+  });
+}
+
+/** Count formats we had to discard because they were signature-ciphered. */
+function cipheredCount(pr) {
+  const sd = (pr && pr.streamingData) || {};
+  const all = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
+  return all.filter((f) => {
+    const p = playable(f, null);
+    return p && p.blockedSig;
+  }).length;
+}
+
 export async function inspect(url, ctx) {
   const videoId = parseVideoId(url);
   if (!videoId) return null;
-  const watchUrl = YT_BASE + '/watch?v=' + videoId + '&hl=en';
-  const res = await upstream(watchUrl, {
-    headers: {
-      accept: 'text/html,application/xhtml+xml',
-      'accept-language': 'en-US,en;q=0.9',
-      'upgrade-insecure-requests': '1',
-      cookie: ctx.cookieJar.header(watchUrl),
-      referer: YT_ORIGIN,
-    },
-  });
-  const buf = await readBody(res.res, { limit: 60 * 1024 * 1024 });
-  const html = buf.toString('latin1');
+
+  /* --- config from the embed document, not the watch page -----------------
+     The watch page is the most heavily challenged surface on the site. The
+     embed document exists to be loaded cross-origin by strangers, so it is
+     gated far more loosely and still carries a usable ytcfg (and often a
+     complete ytInitialPlayerResponse). */
+  const embedUrl = YT_BASE + '/embed/' + videoId + '?hl=en';
+  let html = '';
+  try {
+    const res = await upstream(embedUrl, {
+      headers: {
+        accept: 'text/html,application/xhtml+xml',
+        'accept-language': 'en-US,en;q=0.9',
+        'upgrade-insecure-requests': '1',
+        cookie: ctx.cookieJar.header(embedUrl),
+        /* an embed is reached from a third-party page, so that is the referer
+           a genuine one carries */
+        referer: 'https://www.google.com/',
+      },
+    });
+    html = (await readBody(res.res, { limit: 60 * 1024 * 1024 })).toString('latin1');
+  } catch {
+    /* no embed document: the ladder below can still run keyless */
+  }
 
   let pr =
     harvest(html, 'ytInitialPlayerResponse = ') ||
@@ -157,49 +203,61 @@ export async function inspect(url, ctx) {
   const key =
     (cfg.INNERTUBE_API_KEY) ||
     (/INNERTUBE_API_KEY\s*:\s*"([^"]+)/.exec(html) || [])[1] ||
-    'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-  const cver = (/INNERTUBE_CLIENT_VERSION\s*:\s*"([^"]+)/.exec(html) || [])[1] || '2.20240901.01.00';
-  const visitor = cfg.VISITOR_DATA || (/VISITOR_DATA\s*:\s*"([^"]+)/.exec(html) || [])[1] || '';
+    '';
 
-  // Second attempt through the innertube RPC -- sometimes yields URLs the HTML
-  // response had stripped.
-  if (!pr || !(pr.streamingData && (pr.streamingData.formats || pr.streamingData.adaptiveFormats))) {
-    try {
-      const rpc = await upstream(YT_BASE + '/youtubei/v1/player?prettyPrint=false', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'user-agent': 'Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36',
-          origin: YT_BASE,
-          referer: YT_BASE + '/watch?v=' + videoId,
-          cookie: ctx.cookieJar.header(watchUrl),
-        },
-        body: JSON.stringify({
-          context: {
-            client: {
-              clientName: 'WEB',
-              clientVersion: cver,
-              hl: 'en',
-              gl: 'US',
-              visitorData: visitor,
-              browserName: 'Chrome',
-              platform: 'MOBILE',
-            },
-          },
-          videoId,
-          contentCheckOk: true,
-          racyCheckOk: true,
-          thirdParty: { embedUrl: YT_BASE + '/embed/' + videoId },
-        }),
-      });
-      const j = JSON.parse((await readBody(rpc.res, { limit: 8 * 1024 * 1024 })).toString('utf8'));
-      if (j && (j.streamingData || j.playabilityStatus)) pr = j;
-    } catch {
-      /* keep whatever the watch page gave us */
+  /* One visitor identity per egress, reused — never randomised per request. */
+  const visitorRec = await getVisitorData({
+    cookie: ctx.cookieJar.header(embedUrl),
+    embedHtml: html,
+  });
+  const visitor = visitorRec.value;
+
+  /* --- client ladder ------------------------------------------------------
+     Walk the configured identities until one hands back formats with real
+     URLs. Stop early on success; record every attempt so a block can be
+     attributed to a specific client rather than to "YouTube". */
+  const attempts = [];
+  let usedClient = pr && hasUsableStreams(pr) ? 'embed-document' : null;
+
+  if (!usedClient) {
+    for (const clientKey of LADDER) {
+      let note = 'no usable formats';
+      try {
+        const j = await playerRequest(videoId, clientKey, {
+          visitorData: visitor,
+          cookie: ctx.cookieJar.header(embedUrl),
+          apiKey: key,
+        });
+        const status = ((j || {}).playabilityStatus || {}).status || 'UNKNOWN';
+        if (j && hasUsableStreams(j)) {
+          pr = j;
+          usedClient = clientKey;
+          attempts.push({ client: clientKey, status, ok: true });
+          break;
+        }
+        const ciph = cipheredCount(j);
+        if (ciph) note = ciph + ' ciphered format(s), no JS player';
+        else if (status !== 'OK') note = status + (((j || {}).playabilityStatus || {}).reason ? ': ' + j.playabilityStatus.reason : '');
+        else note = 'urls stripped';
+        /* Keep the most informative response around in case every client
+           fails, so the error surface still has real metadata to show. */
+        if (j && (j.streamingData || j.playabilityStatus) && !pr) pr = j;
+        attempts.push({ client: clientKey, status, ok: false, note });
+      } catch (e) {
+        attempts.push({ client: clientKey, status: 'ERROR', ok: false, note: String(e.message || e).slice(0, 120) });
+      }
     }
   }
+
   if (!pr) {
-    return { videoId, ok: false, reason: 'no player response (page shape changed)', embedOnly: true };
+    return {
+      videoId,
+      ok: false,
+      reason: 'no player response from the embed document or any innertube client',
+      embedOnly: true,
+      attempts,
+      visitorSource: visitorRec.source,
+    };
   }
 
   const ps = pr.playabilityStatus || {};
@@ -245,11 +303,17 @@ export async function inspect(url, ctx) {
   const thumbs = (vd.thumbnail && vd.thumbnail.thumbnails) || [];
   const bestThumb = thumbs.length ? thumbs[thumbs.length - 1].url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
+  /* Distinguish the two failure modes that used to collapse into "blocked":
+     a ciphered format list means the request was fine and we simply cannot
+     run YouTube's signature JS; a stripped list means the PO-token gate. */
+  const ciphered = cipheredCount(pr);
   const blockNote =
     !muxed.length && !vids.length
-      ? ps.status === 'OK'
-        ? 'upstream returned formats with stream URLs stripped (bot gating on this egress IP)'
-        : ps.reason || ps.status || 'no stream urls'
+      ? ciphered
+        ? `upstream returned ${ciphered} signature-ciphered format(s); no JS player to unscramble them`
+        : ps.status === 'OK'
+          ? 'upstream returned formats with stream URLs stripped (PO-token gate on this egress IP)'
+          : ps.reason || ps.status || 'no stream urls'
       : null;
 
   return {
@@ -269,6 +333,13 @@ export async function inspect(url, ctx) {
     views: Number(vd.viewCount || 0) || 0,
     playability: ps.status || 'UNKNOWN',
     reason: blockNote,
+    /* provenance, so a block is attributable rather than mysterious */
+    client: usedClient || 'none',
+    clientLabel: CLIENTS[usedClient] ? CLIENTS[usedClient].name : usedClient || 'none',
+    attempts,
+    ciphered,
+    visitorSource: visitorRec.source,
+    visitorSynthetic: !!visitorRec.synthetic,
     muxed: muxed.slice(0, 8).map(withWire(ctx)),
     video: vids.slice(0, 8).map(withWire(ctx)),
     audio: auds.slice(0, 2).map(withWire(ctx)),

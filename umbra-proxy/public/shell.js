@@ -31,6 +31,9 @@ const S = {
   log: [],
   minted: new Map(),
   stats: { reqs: 0, bytes: 0 },
+  /* mirrors the server session policy so the frame-load handler knows whether
+     redirect policing is on; 'native' turns every intervention off */
+  policy: { follow: 'all', referrer: 'origin' },
   booting: true,
 };
 window.__UMBRA_SHELL__ = true;
@@ -116,7 +119,7 @@ async function newTab(startUrl, opts = {}) {
     id: reg.tab, key: reg.key, url: startUrl || 'umbra://home/', title: 'Umbra',
     hist: [], hi: -1, fav: '', held: 0, hops: [], reqs: 0, mode: 'none',
     frame: null, node: null, loading: false, native: null,
-    navSeq: 0, watchdog: null, fails: 0,
+    navSeq: 0, watchdog: null, fails: 0, adopts: [],
   };
   S.tabs.push(t);
   buildTabNode(t);
@@ -320,7 +323,7 @@ async function goto(t, url, opts = {}) {
   /* tripwire trips accumulate across shell-driven re-navigations (revert and
      adoption below) so a hostile page terminates at the error veil instead of
      looping; only fresh user intent clears the count */
-  if (opts.fresh) t.fails = 0;
+  if (opts.fresh) { t.fails = 0; t.adopts = []; }
   renderTab(t);
   veil(t, 'load', shortU(j.umbra));
   armWatchdog(t, 'wire document');
@@ -342,6 +345,36 @@ function adoptOffWire(t, where) {
   const tail = where.slice(ORIGIN.length);
   if (!tail.startsWith('/')) return null;
   return 'umbra://' + m[1] + tail;
+}
+
+/* Is redirect policing switched off entirely? */
+const policeOff = () => S.policy.follow === 'native';
+
+/* Adoption re-navigates the tab, which loads a document, which can move
+   itself again — and because a healthy sync clears the escape tripwire, a
+   page that re-navigates on *every* load would otherwise adopt forever, one
+   full reload per cycle. That is the reload storm.
+   This ledger is deliberately NOT cleared by a successful sync: only fresh
+   user intent (address bar, chrome buttons, policy change) resets it, so an
+   oscillating page provably runs out of budget. */
+const ADOPT_WINDOW = 12000;
+const ADOPT_MAX = 3;
+function adoptAllowed(t, target) {
+  const now = Date.now();
+  t.adopts = (t.adopts || []).filter((e) => now - e.at < ADOPT_WINDOW);
+  const seen = t.adopts.some((e) => e.url === target);
+  t.adopts.push({ url: target, at: now });
+  return !seen && t.adopts.length <= ADOPT_MAX;
+}
+
+/* Terminal state for a tab that will not stay put: stop, explain, offer a
+   retry. Never re-navigates, so it cannot contribute to a loop. */
+function stopFollowing(t, msg) {
+  t.loading = false;
+  t.pendingNav = null;
+  clearWatchdog(t);
+  renderTab(t); renderStatus();
+  veil(t, 'error', msg);
 }
 
 function onFrameLoad(t) {
@@ -373,7 +406,7 @@ function onFrameLoad(t) {
       return;
     }
     t.fails = (t.fails || 0) + 1;
-    if (offWire && t.fails <= 3) {
+    if (offWire && (policeOff() || t.fails <= 3)) {
       /* a readable same-origin landing off the wire is an unhookable native
          navigation (the location-href setter aimed at '/results…': the
          YouTube search pattern), not an attack: adopt the path onto the
@@ -382,11 +415,29 @@ function onFrameLoad(t) {
          happened, ledgered below. */
       const adopted = adoptOffWire(t, where);
       if (adopted && adopted !== t.url) {
+        if (!adoptAllowed(t, adopted)) {
+          /* the page re-navigates on every load; adopting again would just
+             reload it forever. Stop here instead of storming. */
+          log('e', 'adoption loop on ' + shortU(adopted) + ' — stopped following');
+          toast('this page keeps redirecting itself — Umbra stopped reloading it', 5000, 'warn');
+          stopFollowing(t, 'This page redirects itself every time it loads, so Umbra stopped reloading it. Retry to load it once more, or set the redirect policy to “off” to let it navigate freely.');
+          return;
+        }
         log('s', 'adopted same-origin hop → ' + shortU(adopted));
         t.pendingNav = null;
         goto(t, adopted, { push: true });
         return;
       }
+    }
+    if (policeOff()) {
+      /* Policing is off: never revert, never reload-loop. An unreadable
+         landing means the tab genuinely left the proxy — say so plainly
+         rather than yanking it back. */
+      t.escapes = (t.escapes || 0) + 1;
+      log('r', 'frame left the wire and was NOT reverted (redirect policy: off) — ' + shortU(t.url));
+      toast('this tab left Umbra and was not reverted <b>(redirect policy: off)</b>', 5200, 'warn');
+      stopFollowing(t, 'This tab navigated off Umbra and the redirect policy is set to “off”, so it was not reverted. Anything it loads now goes direct, not through the proxy. Retry to pull it back onto the wire.');
+      return;
     }
     if (t.fails >= 2) {
       /* reverting again would loop forever (dead wire, hostile page): say so */
@@ -769,7 +820,15 @@ function wireUI() {
     if (e.target.value !== '__real__') $('#cloakTitle').value = e.target.value;
     else $('#cloakTitle').value = '(real title)';
   };
-  $('#polRedirect').onchange = (e) => api('policy', { method: 'POST', body: JSON.stringify({ follow: e.target.value }) }).then(() => toast('redirect policy: <b>' + esc(e.target.value) + '</b>'));
+  $('#polRedirect').onchange = (e) => api('policy', { method: 'POST', body: JSON.stringify({ follow: e.target.value }) }).then((j) => {
+    if (j && j.policy) S.policy = j.policy;
+    /* a tab that already gave up under the strict policy deserves a clean
+       slate when the user loosens it, rather than staying stuck on the veil */
+    for (const t of S.tabs) { t.fails = 0; t.adopts = []; }
+    toast(e.target.value === 'native'
+      ? 'redirect policy: <b>off</b> — Umbra will not hold or revert navigation'
+      : 'redirect policy: <b>' + esc(e.target.value) + '</b>', 3200);
+  });
   $('#polReferrer').onchange = (e) => api('policy', { method: 'POST', body: JSON.stringify({ referrer: e.target.value }) }).then(() => log('i', 'referer policy → ' + e.target.value));
 
   addEventListener('keydown', (e) => {
@@ -802,6 +861,7 @@ window.__UMBRA__ = {
   try {
     const j = await api('boot');
     S.session = j.session;
+    if (j.policy) { S.policy = j.policy; const sel = $('#polRedirect'); if (sel) sel.value = j.policy.follow; }
     log('i', 'umbra/1 origin ready · session ' + (j.session || '').slice(0, 8) + ' · modes ' + (j.modes || []).join(','));
   } catch (e) {
     log('e', 'boot failed: ' + e.message);
