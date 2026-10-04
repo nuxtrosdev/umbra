@@ -471,7 +471,25 @@ const server = http.createServer((req, res) => {
   }
 
   if (p === '/watch') {
-    HITS.push({ path: p, method: req.method });
+    HITS.push({ path: p, method: req.method, videoId: u.searchParams.get('v') || null,
+      cookie: req.headers.cookie || null });
+    /* One id exercises the watch page as an extraction surface. Without a
+       consent cookie the real site serves a wall instead of the page, and an
+       extractor that does not send one reads that as a block. */
+    if (u.searchParams.get('v') === 'PageOnly123') {
+      if (!/SOCS=|CONSENT=/.test(req.headers.cookie || '')) {
+        return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },
+          '<!doctype html><html><head><title>Before you continue</title></head>'
+          + '<body><form action="https://consent.youtube.com/save">CONSENT_WALL</form></body></html>');
+      }
+      /* a decoy object first, and braces inside strings: the two things that
+         defeat a regex-based extractor */
+      return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },
+        '<!doctype html><html><head><title>mock watch</title></head><body>'
+        + '<script>var ytInitialData = {"contents":{"note":"} not the object you want {"}};</script>'
+        + '<script nonce="x">var ytInitialPlayerResponse = ' + JSON.stringify(playerResponse(base)) + ';</script>'
+        + '<div>watch page for PageOnly123</div></body></html>');
+    }
     const html = `<!doctype html><html><head><title>Mock Video Title - MockTube</title></head><body>` +
       `<div id="player"></div><script>var ytInitialPlayerResponse = ${JSON.stringify(playerResponse(base))};</script>` +
       `<a href="/watch?v=${VID}">self</a><img src="/thumb.jpg">` +
@@ -495,6 +513,31 @@ const server = http.createServer((req, res) => {
     }, `<!doctype html><html><head><title>embed</title>` +
       `<script>ytcfg.set({"INNERTUBE_API_KEY":"MOCK_EMBED_KEY","INNERTUBE_CLIENT_VERSION":"2.20260708.00.00","VISITOR_DATA":"${MOCK_VISITOR}"});</script>` +
       `</head><body><div id="mock-embed">embed for ${p.slice(7)}</div></body></html>`);
+  }
+  /* ---- the watch page as an extraction surface ----
+     The real page embeds the same playerResponse the API returns, inside a
+     script tag, surrounded by megabytes of unrelated markup. The mock
+     reproduces the two things that actually break naive extractors: braces
+     inside strings, and a second JSON object on the page. */
+  if (p === '/oembed') {
+    HITS.push({ path: '/oembed', method: req.method });
+    return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+      title: 'Mock oEmbed Title', author_name: 'Mock Author',
+      author_url: 'https://www.youtube.com/channel/UC' + 'x'.repeat(22),
+      thumbnail_url: 'https://i.ytimg.com/vi/x/hqdefault.jpg',
+    }));
+  }
+  if (p === '/feeds/videos.xml') {
+    const cid = u.searchParams.get('channel_id') || '';
+    HITS.push({ path: '/feeds/videos.xml', method: req.method, channelId: cid });
+    return send(res, 200, { 'content-type': 'application/atom+xml' },
+      '<?xml version="1.0"?><feed><title>Mock Feed Channel</title>'
+      + '<entry><yt:videoId>FeedVideo01</yt:videoId><title>Feed Video One</title>'
+      + '<author><name>Mock Author</name></author><published>2026-01-02T00:00:00+00:00</published>'
+      + '<media:statistics views="4242"/></entry>'
+      + '<entry><yt:videoId>FeedVideo02</yt:videoId><title><![CDATA[Feed & Video Two]]></title>'
+      + '<author><name>Mock Author</name></author><published>2026-01-01T00:00:00+00:00</published>'
+      + '</entry></feed>');
   }
   /* service-worker data blob: where a genuine visitorData is minted from */
   if (p === '/sw.js_data') {

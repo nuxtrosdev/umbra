@@ -216,6 +216,19 @@ export async function streams(videoId) {
     throw err;
   }
 
+  return payloadFromPlayerResponse(pr, videoId, { pot, used, tried });
+}
+
+/**
+ * Turn a playerResponse into the Piped-shaped payload the rest of Umbra
+ * speaks.
+ *
+ * Factored out of streams() because the InnerTube API is no longer the only
+ * way we obtain one of these: the watch page carries the same object. Two
+ * copies of this logic would drift, and the deciphering and proof-of-origin
+ * handling below is exactly the part that must not.
+ */
+export async function payloadFromPlayerResponse(pr, videoId, { pot = '', used = null, tried = [] } = {}) {
   const sd = pr.streamingData || {};
   const vd = pr.videoDetails || {};
   const mf = (pr.microformat || {}).playerMicroformatRenderer || {};

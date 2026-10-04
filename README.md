@@ -178,6 +178,8 @@ format metadata, and what a caller does with those URLs is its own decision.
 | `UMBRA_YT_VISITOR_TTL` | `21600000` | Visitor identity cache lifetime, ms. |
 | `UMBRA_YT_EMBED_URL` | `https://www.reddit.com/` | Referring origin presented for embedded playback. |
 | `UMBRA_YT_BASE` | — | Override the YouTube origin. Used by the test suite to point at a mock. |
+| `UMBRA_WATCHPAGE_UA` | a current Chrome UA | User agent for watch-page requests; an unrecognised one gets a degraded page. |
+| `UMBRA_WATCHPAGE_TIMEOUT` | `10000` | Watch-page request timeout, ms. |
 | `UMBRA_YT_POTOKEN` | — | A proof-of-origin token lifted from a browser session. See below. |
 | `UMBRA_POT_PROVIDER_URL` | — | A bgutil-style PO token minting service, e.g. `http://127.0.0.1:4416`. |
 | `UMBRA_YT_COOKIES` | — | Cookie header for a signed-in YouTube session. |
@@ -194,6 +196,30 @@ format metadata, and what a caller does with those URLs is its own decision.
 | `UMBRA_PROVIDER_COOLDOWN` | `120000` | Base cooldown, ms. Doubles per consecutive bench. |
 | `UMBRA_PROVIDER_MAX_ATTEMPTS` | `3` | Instances tried per call, per provider. |
 | `UMBRA_CACHE_MAX` | `500` | Metadata cache entries. |
+
+### Access methods, and why they are not all the same
+
+Worth being explicit, because it is the thing that was wrong for a long time:
+Piped, Invidious, NewPipe, YouTube.js, PokeTube and Umbra's own client all end
+up calling `/youtubei/v1/player`. They differ in *whose address* makes the
+call, not in what they call. That is real diversity when our address is the
+problem, and no diversity at all when the endpoint itself refuses us — which
+is why every backend can fail at the same moment with "no instance answered".
+
+So Umbra also reads surfaces that are not that API:
+
+| Surface | What it gives | Key? | Notes |
+| --- | --- | --- | --- |
+| `watchpage` | streams + metadata | no | Lifts `ytInitialPlayerResponse` out of the watch/embed HTML. A different door to the same data. |
+| oEmbed | title, author, thumbnail | no | Answers when almost nothing else does. Used so a page can at least name a video it cannot play. |
+| Channel Atom feed | ~15 recent uploads | no | `feeds/videos.xml`. Close to unblockable; cannot back a catalogue. |
+
+The watch-page provider runs on our own address, so it buys *surface*
+diversity rather than address diversity. It sends a consent cookie, because
+without one a European egress is served the cookie wall instead of the page
+and the failure looks like a block. It extracts with a brace walker rather
+than a regex, because the JSON contains braces inside strings and the page
+carries a second, similar-looking object.
 
 ### When playback fails: proof-of-origin
 

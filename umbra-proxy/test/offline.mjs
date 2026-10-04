@@ -89,6 +89,36 @@ async function unit() {
   const H = await import('../server/html.mjs');
   const Y = await import('../server/youtube.mjs');
 
+  /* ---- the watch page as a second extraction surface ---- */
+  const WP = await import('../server/watchpage.mjs');
+  const TB = await import('../server/tube.mjs');
+
+  /* A regex-based extractor fails both of these: the decoy object comes
+     first, and the real one contains braces inside a string. */
+  const trickyHtml = '<script>var ytInitialData = {"a":"} {"};</script>'
+    + '<script>var ytInitialPlayerResponse = {"videoDetails":{"title":"a } b { c"},"ok":true};</script>';
+  const wpTricky = WP.extractJson(trickyHtml, 'ytInitialPlayerResponse');
+  ok('watch-page extraction survives a decoy object and braces inside strings',
+    wpTricky && wpTricky.ok === true && wpTricky.videoDetails.title === 'a } b { c',
+    JSON.stringify(wpTricky && wpTricky.videoDetails));
+  ok('watch-page extraction reports absence rather than guessing',
+    WP.extractJson('<html>no json here</html>', 'ytInitialPlayerResponse') === null);
+
+  /* The error page used to print "undefined — ..." because provider-level
+     entries carry no `instance`, and it hid the nested reasons entirely. */
+  const triedShape = [{
+    provider: 'invidious',
+    note: 'no invidious instance answered',
+    instances: [{ instance: 'https://yewtu.be', note: 'connect ETIMEDOUT' }],
+  }];
+  const explained = TB.explainTried(triedShape);
+  ok('the error page names the provider instead of printing undefined',
+    !/undefined/.test(explained) && /invidious/.test(explained), explained.split('\n')[0]);
+  ok('the error page surfaces the per-instance reason, not just the summary',
+    /ETIMEDOUT/.test(explained) && /yewtu\.be/.test(explained), explained.split('\n')[1]);
+  ok('the error page still renders the older flat tried shape',
+    /pipedapi\.x {2}— {2}http 500/.test(TB.explainTried([{ instance: 'pipedapi.x', note: 'http 500' }])));
+
   /* ---- proof-of-origin tokens ---- */
   const PT = await import('../server/potoken.mjs');
   PT.resetPoTokenCache();
@@ -975,6 +1005,31 @@ async function wire() {
     ahdiag.j.data.clients.every((c) => c.formats === 0) &&
     ahdiag.j.data.clients.some((c) => c.hls === true),
     ahdiag.j.data.diagnosis);
+
+  /* The watch page end to end: consent cookie, extraction, deciphering and
+     normalisation, through the provider the manager would use. This is the
+     one backend that never touches /youtubei/v1/player, which is the whole
+     reason it exists. */
+  process.env.UMBRA_YT_BASE = MOCK;
+  const WPP = await import('../server/providers/watchpage.mjs');
+  const wpStreams = await WPP.getStreams('PageOnly123');
+  ok('the watch-page provider yields playable streams without touching the api',
+    (wpStreams.data.videoStreams.length + wpStreams.data.audioStreams.length) > 0 &&
+    wpStreams.data.provider === 'watchpage',
+    wpStreams.data.videoStreams.length + 'v/' + wpStreams.data.audioStreams.length + 'a');
+
+  const wpHits = await (await fetch(`${MOCK}/__hits`)).json();
+  const wpWatch = wpHits.filter((h) => h.path === '/watch' && h.videoId === 'PageOnly123');
+  ok('the watch-page request carries a consent cookie, or the eu wall replaces the page',
+    wpWatch.length > 0 && /SOCS=|CONSENT=/.test(wpWatch[wpWatch.length - 1].cookie || ''),
+    String(wpWatch.length && wpWatch[wpWatch.length - 1].cookie).slice(0, 40));
+
+  const wpChan = await WPP.getChannel('UC' + 'x'.repeat(22));
+  ok('a channel feed gives uploads with no api key and no quota',
+    wpChan.data.videos.length === 2 && wpChan.data.videos[0].id === 'FeedVideo01' &&
+    /Feed & Video Two/.test(wpChan.data.videos[1].title),
+    wpChan.data.videos.map((v) => v.id).join(','));
+  delete process.env.UMBRA_YT_BASE;
 
   /* The PO token travels on the player request itself; the mock records what
      it was sent so we can prove the wiring rather than trust it. */

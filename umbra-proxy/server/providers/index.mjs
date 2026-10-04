@@ -14,6 +14,7 @@
  */
 
 import * as innertube from './innertube.mjs';
+import * as watchpage from './watchpage.mjs';
 import * as piped from './piped.mjs';
 import * as invidious from './invidious.mjs';
 import * as poketube from './poketube.mjs';
@@ -22,12 +23,16 @@ import * as newpipe from './newpipe.mjs';
 import * as ytdlp from './ytdlp.mjs';
 import { envList } from './pool.mjs';
 
-export const ALL = [innertube, piped, invidious, poketube, youtubejs, newpipe, ytdlp];
+export const ALL = [innertube, watchpage, piped, invidious, poketube, youtubejs, newpipe, ytdlp];
 
 const BY_ID = new Map(ALL.map((p) => [p.id, p]));
 export const get = (id) => BY_ID.get(id) || null;
 
-const DEFAULT_ORDER = ['innertube', 'piped', 'invidious', 'poketube', 'newpipe', 'youtubejs', 'ytdlp'];
+/* watchpage sits second: it is the only backend that does not go through the
+   InnerTube API, so it is the one thing still standing when that endpoint
+   refuses us. It runs on our own address, so the third-party backends that
+   extract from someone else's still follow it. */
+const DEFAULT_ORDER = ['innertube', 'watchpage', 'piped', 'invidious', 'poketube', 'newpipe', 'youtubejs', 'ytdlp'];
 
 /** UMBRA_PROVIDERS overrides both the order and the membership. */
 export function order() {

@@ -156,16 +156,39 @@ export function watchDoc(p, info, cmts) {
   </main>`;
 }
 
+/**
+ * Render a tried-list.
+ *
+ * There are two shapes in play and the old code only understood one of them,
+ * which is why this page used to print "undefined — no invidious instance
+ * answered": provider-level entries are {provider, note, instances} and have
+ * no `instance` field at all. Worse than the cosmetic bug, the nested
+ * per-instance notes — the only part that says *why*, e.g. a connection
+ * refusal versus a bot gate — were never shown. An error page that hides the
+ * error is not worth rendering.
+ */
+export function explainTried(tried) {
+  const lines = [];
+  for (const t of (tried || [])) {
+    const label = t.provider || t.instance || t.client || '?';
+    lines.push(label + '  —  ' + (t.note || 'failed'));
+    for (const i of (t.instances || [])) {
+      lines.push('    ' + (i.instance || i.client || '?') + '  —  ' + (i.note || 'failed'));
+    }
+  }
+  return lines.join('\n');
+}
+
 export function errorDoc(what, e, tried) {
   return `<main>
   <header><span class="kicker">umbra tube · unavailable</span>
   <h1>${esc(what)}</h1>
-  <p class="muted">No Piped instance answered. The pool is federated precisely because instances get blocked,
-  rate-limited or simply go down — but when every one of them fails at once it is usually YouTube squeezing the
-  whole network, not your address. Retry, or set UMBRA_PIPED_INSTANCES to a pool you control.</p>
+  <p class="muted">Every backend was tried and none answered. The pool is federated precisely because instances
+  get blocked, rate-limited or simply go down — but when all of them fail at once it is usually YouTube squeezing
+  the whole network, or this machine having no route to it. The reasons below say which.</p>
   ${searchForm()}</header>
   <h2>What was tried</h2>
-  <pre>${esc((tried || []).map((t) => t.instance + '  —  ' + t.note).join('\n') || String(e && e.message || e))}</pre>
+  <pre>${esc(explainTried(tried) || String(e && e.message || e))}</pre>
   </main>`;
 }
 

@@ -28,6 +28,16 @@ const ok = (data, meta = {}) => ({ ok: true, data, meta });
  * full upstream URL; the client gets a reason and a tried-list of backend
  * names instead.
  */
+/** Keep the failure mode, drop the topology: urls and bare hosts go. */
+function scrub(note) {
+  if (!note) return undefined;
+  return String(note)
+    .replace(/https?:\/\/[^\s)]+/g, '<upstream>')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, '<host>')
+    .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+){1,}(?::\d+)?\b/gi, (m) => (/\.(mjs|js|json)$/i.test(m) ? m : '<host>'))
+    .slice(0, 160);
+}
+
 function errorBody(e) {
   const code = e && e.code;
   const reason =
@@ -40,8 +50,13 @@ function errorBody(e) {
     meta: {
       tried: (e && e.tried || []).map((t) => ({
         provider: t.provider,
-        /* instance-level notes are kept but stripped of anything URL-shaped */
         attempts: (t.instances || []).length || undefined,
+        /* The reason, not just the count. Callers were being told that three
+           things failed without being told what went wrong, which makes a
+           connection refusal indistinguishable from a bot gate. Hostnames are
+           stripped; the failure mode is not sensitive, the topology is. */
+        note: scrub(t.note),
+        instances: (t.instances || []).slice(0, 4).map((i) => scrub(i.note)).filter(Boolean),
       })),
     },
   };
