@@ -12,6 +12,8 @@
  */
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import vm from 'node:vm';
+import fs from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,6 +90,68 @@ async function unit() {
   const P = await import('../server/protocol.mjs');
   const H = await import('../server/html.mjs');
   const Y = await import('../server/youtube.mjs');
+
+  /* ---- worker-scope interception ---- */
+  /* shim.js rewrote the worker's script url but nothing patched the worker's
+     own globals, so its fetch/XHR/importScripts left for the real network
+     with the user's address while the page stayed proxied. These run the
+     real worker-shim source against a synthetic worker global. */
+  {
+    const src = fs.readFileSync(path.join(HERE, '..', 'public', 'worker-shim.js'), 'utf8');
+    const calls = { imported: null, fetched: null, opened: null };
+    const g = {
+      TextEncoder, btoa, URL, Request: class { constructor(u) { this.url = u; } },
+      importScripts: (...a2) => { calls.imported = a2; },
+      fetch: (i) => { calls.fetched = i; return Promise.resolve('ok'); },
+      XMLHttpRequest: function () {},
+      WebSocket: function (u) { this.url = u; },
+      Worker: function () {},
+    };
+    g.XMLHttpRequest.prototype.open = function (m, u) { calls.opened = u; };
+    g.self = g;
+    vm.createContext(g);
+    vm.runInContext(src, g);
+    g.__umbraWorkerInit({
+      origin: 'https://proxy.example', pfx: '/~umbra/', key: 'K', tab: 'T', sid: 'S',
+      base: 'https://www.youtube.com/s/player/abc/base.js',
+    });
+
+    g.importScripts('https://www.youtube.com/s/player/x/w.js', '/s/rel.js');
+    ok('importScripts is rewritten, for every argument it is given',
+      calls.imported.length === 2 &&
+      calls.imported.every((u) => u.startsWith('https://proxy.example/~umbra/p/s/')),
+      String(calls.imported && calls.imported.length));
+    /* The second argument was relative. Inside a worker it would resolve
+       against the bootstrap blob, which is not where the code thinks it
+       lives, so the logical base has to drive resolution. */
+    const relDecoded = Buffer.from(
+      calls.imported[1].split('/~umbra/p/s/')[1].split(/[/?]/)[0].replace(/-/g, '+').replace(/_/g, '/'),
+      'base64').toString('utf8');
+    ok('a relative importScripts resolves against the logical url, not the blob',
+      relDecoded === 'https://www.youtube.com/s/rel.js', relDecoded);
+
+    g.fetch('https://www.youtube.com/youtubei/v1/player');
+    ok('fetch inside a worker goes through the wire',
+      typeof calls.fetched === 'string' && calls.fetched.startsWith('https://proxy.example/~umbra/p/x/'),
+      String(calls.fetched).slice(0, 48));
+    const xhr = new g.XMLHttpRequest();
+    xhr.open('GET', 'https://r1---sn-x.googlevideo.com/videoplayback?expire=1');
+    ok('xhr inside a worker goes through the wire',
+      calls.opened.startsWith('https://proxy.example/~umbra/p/x/'), calls.opened.slice(0, 48));
+    const ws = new g.WebSocket('wss://www.youtube.com/live');
+    ok('websockets inside a worker are routed to the umbra socket wire',
+      ws.url.startsWith('wss://proxy.example/~umbra/w/'), ws.url.slice(0, 44));
+    /* Already-wired and non-network refs must survive untouched: rewriting
+       twice breaks as surely as not rewriting. */
+    calls.imported = null;
+    g.importScripts('https://proxy.example/~umbra/p/s/abc', 'data:text/javascript,0');
+    ok('already-wired and data urls are left alone',
+      calls.imported[0] === 'https://proxy.example/~umbra/p/s/abc' &&
+      calls.imported[1] === 'data:text/javascript,0');
+    let nested = null;
+    try { new g.Worker('x'); } catch (e) { nested = e.message; }
+    ok('a nested worker is refused rather than left unshimmed', /not proxied/.test(nested || ''), nested);
+  }
 
   /* ---- the watch page as a second extraction surface ---- */
   const WP = await import('../server/watchpage.mjs');

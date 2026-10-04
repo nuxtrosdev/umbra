@@ -1017,6 +1017,9 @@ const STATIC = {
   '/shell.css': ['shell.css', 'text/css; charset=utf-8'],
   '/shell.js': ['shell.js', 'application/javascript; charset=utf-8'],
   '/~umbra/shim.js': ['shim.js', 'application/javascript; charset=utf-8'],
+  /* loaded by the generated worker bootstrap, so it must be reachable
+     without a per-frame token: it carries no data, only the rewriter */
+  '/~umbra/a/worker-shim.js': ['worker-shim.js', 'application/javascript; charset=utf-8'],
   '/~umbra/player.js': ['player.js', 'application/javascript; charset=utf-8'],
 };
 function serveStatic(res, key) {

@@ -287,11 +287,46 @@
         ['webkitRTCPeerConnection', 'mozRTCPeerConnection'].forEach(function (n) { try { window[n] = window.RTCPeerConnection; } catch (e) {} });
       }
     } catch (e) {}
+    /* Rewriting the worker's script url only moves where the code comes
+       from. Inside, the worker has its own globals and nothing patched them,
+       so its fetch/XHR/importScripts/WebSocket went straight out to the real
+       network with the user's address while the page stayed proxied. A page
+       cannot reach into a worker's scope after it starts, so the worker has
+       to patch itself first: boot a generated stub that loads the worker
+       shim, configures it with this frame's credentials, and only then
+       imports the real script. */
+    function workerBoot(u) {
+      var real = wire(u, 's');
+      var logical = abs(u) || ORIGIN;
+      var cfg = { origin: ORIGIN, pfx: PFX, key: ctx.key, tab: ctx.tab, sid: SID, base: logical };
+      var src = 'importScripts(' + JSON.stringify(ORIGIN + PFX + 'a/worker-shim.js') + ');'
+        + 'self.__umbraWorkerInit(' + JSON.stringify(cfg) + ');'
+        + 'importScripts(' + JSON.stringify(real) + ');';
+      return URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    }
     try {
       if (window.Worker) {
         var W = window.Worker;
-        window.Worker = function (u, o) { return new W(wire(u, 's'), o); };
+        window.Worker = function (u, o) {
+          /* Module workers cannot use importScripts, so the bootstrap does
+             not apply. Rather than silently hand back an unshimmed worker
+             that can escape, refuse it and say why. */
+          if (o && o.type === 'module') {
+            post('blocked', { why: 'module worker' });
+            throw new Error('umbra: module workers are not proxied');
+          }
+          try { return new W(workerBoot(u), o); } catch (e) { return new W(wire(u, 's'), o); }
+        };
         window.Worker.prototype = W.prototype;
+      }
+      /* A SharedWorker outlives the tab and is shared across documents, so it
+         cannot be scoped to one frame's credentials. It was never patched at
+         all, which made it a quieter version of the same escape. */
+      if (window.SharedWorker) {
+        window.SharedWorker = function () {
+          post('blocked', { why: 'SharedWorker' });
+          throw new Error('umbra: shared workers are not proxied');
+        };
       }
     } catch (e) {}
   });
