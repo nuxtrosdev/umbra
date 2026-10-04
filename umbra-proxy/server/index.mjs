@@ -33,6 +33,7 @@ import * as piped from './piped.mjs';
 import * as pipedLocal from './piped-local.mjs';
 import * as ytApi from './api-youtube.mjs';
 import * as pm from './provider-manager.mjs';
+import * as tubeView from './tube-view.mjs';
 import { TUBE_CSS, ADMIN_CSS, providersDoc, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1278,7 +1279,15 @@ async function route(req, res) {
       const ctx = mkCtx('https://tube.umbra/watch?v=' + vid, 'd', tabArg);
       let payload;
       try {
-        payload = withVtt(await piped.streams(vid, ctx), ctx);
+        /* streams decide whether the page can exist at all; title/author and
+           the related rail are enrichment, so they are allowed to fail
+           without taking the player down with them */
+        const streams = await pm.getStreams(vid);
+        const [video, related] = await Promise.all([
+          pm.getVideo(vid).catch(() => null),
+          pm.getRecommendations(vid).catch(() => null),
+        ]);
+        payload = withVtt(tubeView.toWatchPayload({ streams, video, related }, ctx, vid), ctx);
       } catch (e) {
         return send(res, 502, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'umbra-tube', view: 'watch-error' }) },
           localDoc(ctx, tubeError('Could not load that video', e, e.tried), ctx.url,
@@ -1286,7 +1295,7 @@ async function route(req, res) {
       }
       /* comments are a nice-to-have: never fail the page over them */
       let cmts = null;
-      try { cmts = await piped.comments(vid, ctx); } catch { /* omit the section */ }
+      try { cmts = tubeView.toCommentsView(await pm.getComments(vid), ctx); } catch { /* omit the section */ }
       payload = { ...payload, ctx: { origin: ctx.origin, tab: ctx.tabId, key: ctx.key } };
       const info = ji(payload).replace(/'/g, '&#39;');
       const html = tubeWatch(payload, info, cmts);
@@ -1303,7 +1312,9 @@ async function route(req, res) {
       const ctx = mkCtx('https://tube.umbra/search?q=' + encodeURIComponent(q), 'd', tabArg);
       if (!q) return render(ctx, tubeSearch({ query: '', items: [], tried: [] }), logical('/search?q='));
       try {
-        return render(ctx, tubeSearch(await piped.search(q, ctx)), logical('/search?q=' + encodeURIComponent(q)));
+        const r = await pm.search(q, { limit: 40 });
+        return render(ctx, tubeSearch(tubeView.toSearchView({ ...r, query: q }, ctx)),
+          logical('/search?q=' + encodeURIComponent(q)));
       } catch (e) {
         return render(ctx, tubeError('Search is unavailable', e, e.tried), logical('/search?q=' + encodeURIComponent(q)));
       }
@@ -1313,7 +1324,8 @@ async function route(req, res) {
       const id = String(seg[2] || '').slice(0, 64);
       const ctx = mkCtx('https://tube.umbra/channel/' + id, 'd', tabArg);
       try {
-        return render(ctx, tubeChannel(await piped.channel(id, ctx)), logical('/channel/' + id));
+        return render(ctx, tubeChannel(tubeView.toChannelView(await pm.getChannel(id), ctx)),
+          logical('/channel/' + id));
       } catch (e) {
         return render(ctx, tubeError('Channel unavailable', e, e.tried), logical('/channel/' + id));
       }
@@ -1323,7 +1335,8 @@ async function route(req, res) {
     const region = String(u.searchParams.get('region') || 'US').slice(0, 4).toUpperCase();
     const ctx = mkCtx('https://tube.umbra/', 'd', tabArg);
     try {
-      return render(ctx, tubeHome(await piped.trending(region, ctx)), logical('/'));
+      const r = await pm.trending(region);
+      return render(ctx, tubeHome(tubeView.toTrendingView(r, ctx, region)), logical('/'));
     } catch (e) {
       return render(ctx, tubeError('Trending is unavailable', e, e.tried), logical('/'));
     }

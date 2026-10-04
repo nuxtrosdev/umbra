@@ -602,26 +602,27 @@ async function wire() {
   ok('umbra://tube/ mints to a local wire path, no token host leak',
     tubeHref.startsWith(PFX + 'tube') && !/127\.0\.0\.1|localhost/.test(tubeHref.replace(/[?&]t=[^&]*/, '')), tubeHref);
   const tubeHome = await call(tubeHref);
-  ok('tube home renders trending from the piped pool',
-    tubeHome.status === 200 && /Mock Trending/.test(tubeHome.text) && /umbra tube/i.test(tubeHome.text),
+  ok('tube home renders trending through the provider manager',
+    tubeHome.status === 200 && /Local Trending Hit/.test(tubeHome.text) && /umbra tube/i.test(tubeHome.text),
     'http ' + tubeHome.status);
-  ok('tube failed over past the dead instance and says which one served',
-    /127\.0\.0\.1:1/.test(tubeHome.text) && new RegExp('via 127\\.0\\.0\\.1:' + MOCK_PORT).test(tubeHome.text));
+  ok('tube names the provider that served the page, not a raw instance host',
+    /via innertube/.test(tubeHome.text), (/<span class="chip">via ([^<]*)/.exec(tubeHome.text) || [])[1]);
   ok('tube thumbnails are wire urls, never the instance directly',
     /src="\/~umbra\/s\//.test(tubeHome.text) && !/src="http:\/\/127\.0\.0\.1/.test(tubeHome.text));
 
   const tubeSearch = await call((await mint('umbra://tube/search?q=mock+query', 'd', tn.tab)).href);
   ok('tube search returns normalised video items only',
-    tubeSearch.status === 200 && /Mock Piped Result/.test(tubeSearch.text) && !/not a video/.test(tubeSearch.text));
+    tubeSearch.status === 200 && /Local Search Hit/.test(tubeSearch.text) && !/not a video/.test(tubeSearch.text));
+
 
   const tubeWatch = await call((await mint(`umbra://tube/watch?v=${VID}`, 'd', tn.tab)).href);
   ok('tube watch page renders with the player payload',
-    tubeWatch.status === 200 && /Mock Piped Video/.test(tubeWatch.text) && /id="player"/.test(tubeWatch.text),
+    tubeWatch.status === 200 && /Mock Video Title/.test(tubeWatch.text) && /id="player"/.test(tubeWatch.text),
     'http ' + tubeWatch.status);
   ok('tube watch classifies muxed / video-only / audio from piped streams',
     /1 muxed/.test(tubeWatch.text) && /1 video/.test(tubeWatch.text) && /1 audio/.test(tubeWatch.text));
   ok('tube watch carries comments and related videos',
-    /a mock comment/.test(tubeWatch.text) && /Related One/.test(tubeWatch.text));
+    /a local comment/.test(tubeWatch.text) && /Local Related One/.test(tubeWatch.text));
   /* the payload must be the same shape the native capsule uses, so player.js
      drives both surfaces unchanged */
   const tubeInfo = JSON.parse((/data-info='([^']+)'/.exec(tubeWatch.text) || [])[1].replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
@@ -642,11 +643,23 @@ async function wire() {
 
   const tubeBad = await call((await mint('umbra://tube/watch?v=short', 'd', tn.tab)).href);
   ok('tube rejects a malformed video id', tubeBad.status === 400, 'http ' + tubeBad.status);
+  /* The failure the provider work exists for: the local engine is bot-gated
+     AND every Piped instance is refusing at once. Before this, Tube died here
+     because it only ever spoke to Piped. */
+  const tubeRescue = await call((await mint('umbra://tube/search?q=__allgated__', 'd', tn.tab)).href);
+  ok('tube still renders when both the local engine and the whole piped pool fail',
+    tubeRescue.status === 200 && /Invidious Search Hit/.test(tubeRescue.text) &&
+    /via invidious/.test(tubeRescue.text),
+    'http ' + tubeRescue.status + ' ' + ((/<span class="chip">via ([^<]*)/.exec(tubeRescue.text) || [])[1] || ''));
+  ok('tube shows which backends were tried before the one that worked',
+    /innertube/.test(tubeRescue.text) && /piped/.test(tubeRescue.text),
+    (tubeRescue.text.match(/chip warn">([^<]*)/g) || []).slice(0, 3).join(' | '));
+
   const health = JSON.parse((await call('/~umbra/tube.health')).text);
-  ok('instance health reports the benched instance and the preferred one',
-    health.instances.some((i) => /:1$/.test(i.instance) && i.benchedFor > 0) &&
-    health.instances.some((i) => i.preferred && new RegExp(':' + MOCK_PORT + '$').test(i.instance)),
+  ok('the piped pool benched every instance that refused during the squeeze',
+    health.instances.length >= 2 && health.instances.every((i) => i.benchedFor > 0),
     JSON.stringify(health.instances));
+
   ok('the portal links into the tube section',
     /umbra:\/\/tube\//.test((await call((await mint('umbra://home/', 'd', tn.tab)).href)).text));
 

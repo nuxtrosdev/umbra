@@ -406,6 +406,10 @@ const server = http.createServer((req, res) => {
       ],
     }));
   }
+  if (p === '/search' && u.searchParams.get('q') === '__allgated__') {
+    /* every piped instance refusing at once, the way a squeeze actually looks */
+    return send(res, 500, { 'content-type': 'application/json' }, JSON.stringify({ error: 'piped is squeezed too' }));
+  }
   if (p === '/search') {
     HITS.push({ path: p, method: req.method, q: u.searchParams.get('q'), filter: u.searchParams.get('filter') });
     return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
@@ -520,7 +524,7 @@ const server = http.createServer((req, res) => {
       });
       if (p === '/youtubei/v1/search') {
         /* a bot-gated reply: valid JSON, HTTP 200, and not one renderer in it */
-        if (body.query === '__gated__') {
+        if (body.query === '__gated__' || body.query === '__allgated__') {
           return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
             responseContext: {},
             alerts: [{ alertRenderer: { type: 'ERROR', text: { simpleText: "Sign in to confirm you're not a bot" } } }],
@@ -576,11 +580,24 @@ const server = http.createServer((req, res) => {
         }));
       }
       return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
-        contents: { twoColumnWatchNextResults: { results: { results: { contents: [
-          { itemSectionRenderer: { contents: [{ continuationItemRenderer: {
-            continuationEndpoint: { continuationCommand: { token: 'MOCK_COMMENT_TOKEN' } },
-          } }] } },
-        ] } } } },
+        contents: { twoColumnWatchNextResults: {
+          results: { results: { contents: [
+            { itemSectionRenderer: { contents: [{ continuationItemRenderer: {
+              continuationEndpoint: { continuationCommand: { token: 'MOCK_COMMENT_TOKEN' } },
+            } }] } },
+          ] } },
+          /* the watch-next rail, where recommendations actually live */
+          secondaryResults: { secondaryResults: { results: [
+            { compactVideoRenderer: {
+              videoId: 'ccccccccccc',
+              title: { simpleText: 'Local Related One' },
+              thumbnail: { thumbnails: [{ url: `${base}/thumb.jpg`, width: 320 }] },
+              longBylineText: { runs: [{ text: 'Mock Channel', navigationEndpoint: { browseEndpoint: { browseId: 'UCmocklocal' } } }] },
+              lengthText: { simpleText: '2:10' },
+              viewCountText: { simpleText: '900 views' },
+            } },
+          ] } },
+        } },
       }));
     });
   }

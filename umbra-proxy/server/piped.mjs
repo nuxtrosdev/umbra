@@ -46,12 +46,36 @@ const DEFAULT_INSTANCES = [
   'https://api.piped.private.coffee',
   'https://pipedapi.reallyaweso.me',
   'https://pipedapi.ducks.party',
-  'https://pipedapi.drgns.space',
-  'https://pipedapi.r4fo.com',
-  'https://piped-api.codespace.cz',
-  'https://pipedapi.darkness.services',
-  'https://pipedapi.nosebs.ru',
 ];
+
+/* A baked-in list is wrong the moment it ships — these hosts come and go, and
+   several of the ones this file used to carry stopped resolving entirely.
+   TeamPiped publishes the live set, so prefer asking over guessing. */
+export const DIRECTORY = process.env.UMBRA_PIPED_DIRECTORY || 'https://piped-instances.kavin.rocks/';
+
+/**
+ * Replace the public half of the pool from the published directory. The local
+ * instance keeps its place at the front; only the third-party entries are
+ * swapped, so refreshing can never cost us the one backend that cannot vanish.
+ */
+export async function refreshInstances({ limit = 8 } = {}) {
+  const res = await upstream(DIRECTORY, { timeout: 10000, headers: { accept: 'application/json' } });
+  if (res.status !== 200) { res.res.resume(); throw new Error('directory http ' + res.status); }
+  const list = JSON.parse((await readBody(res.res, { limit: 2 * 1024 * 1024 })).toString('utf8'));
+  if (!Array.isArray(list)) throw new Error('directory was not a list');
+  const found = list
+    .map((e) => String((e && (e.api_url || e.apiUrl)) || '').trim().replace(/\/+$/, ''))
+    .filter((u) => /^https:\/\//.test(u))
+    .slice(0, limit);
+  if (!found.length) throw new Error('directory had no api urls');
+  const keepLocal = INSTANCES.includes(LOCAL);
+  INSTANCES.length = 0;
+  if (keepLocal) INSTANCES.push(LOCAL);
+  INSTANCES.push(...found);
+  benched.clear();
+  preferred = INSTANCES[0];
+  return [...INSTANCES];
+}
 
 export const INSTANCES = (process.env.UMBRA_PIPED_INSTANCES || [LOCAL, ...DEFAULT_INSTANCES].join(','))
   .split(',')
@@ -143,6 +167,17 @@ export async function api(path) {
     } catch (e) {
       tried.push({ instance: base, note: String(e.message || e).slice(0, 120) });
       benched.set(base, Date.now() + COOLDOWN);
+    }
+  }
+  /* An instance that was skipped for cooldown never appears in the loop, so
+     without this the report reads as though it was never part of the pool at
+     all — which is exactly how "it only tried Piped" looks when the local
+     instance is benched. Silent omission is worse than a boring line. */
+  const now = Date.now();
+  for (const i of INSTANCES) {
+    const until = benched.get(i) || 0;
+    if (until > now && !tried.some((t) => t.instance === i)) {
+      tried.push({ instance: i, note: `skipped — in cooldown for ${Math.round((until - now) / 1000)}s` });
     }
   }
   const err = new Error('no piped instance answered ' + path);

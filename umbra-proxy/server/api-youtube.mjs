@@ -16,6 +16,7 @@
 import * as pm from './provider-manager.mjs';
 import { stats as cacheStats, clear as cacheClear } from './cache.mjs';
 import * as invidious from './providers/invidious.mjs';
+import * as piped from './piped.mjs';
 
 const MAX_Q = 300;
 
@@ -75,10 +76,16 @@ export async function handle(sub, params, { method = 'GET' } = {}) {
         return { status: 200, body: ok(pm.health()) };
       }
       if (seg[1] === 'survey') return { status: 200, body: ok(pm.registry.SURVEY) };
-      if (seg[1] === 'refresh' && seg[2] === 'invidious') {
+      if (seg[1] === 'refresh' && (seg[2] === 'invidious' || seg[2] === 'piped')) {
         if (method !== 'POST') return { status: 405, body: { ok: false, error: { code: 'METHOD', message: 'POST only.' } } };
-        const picked = await invidious.refreshInstances({ limit: Number(params.get('limit') || 8) });
-        return { status: 200, body: ok({ instances: picked }) };
+        const limit = Number(params.get('limit') || 8);
+        /* Baked-in instance lists rot: hosts vanish and the pool quietly
+           shrinks to whatever still resolves. Both projects publish the live
+           set, so this replaces the pool from the source of truth. */
+        const picked = seg[2] === 'piped'
+          ? await piped.refreshInstances({ limit })
+          : await invidious.refreshInstances({ limit });
+        return { status: 200, body: ok({ provider: seg[2], instances: picked }) };
       }
       if (!seg[1]) return { status: 200, body: ok(pm.providers()) };
     }
@@ -168,6 +175,7 @@ export const ENDPOINTS = [
   'GET  /api/youtube/providers/health?probe=0|1',
   'GET  /api/youtube/providers/survey',
   'POST /api/youtube/providers/refresh/invidious?limit=',
+  'POST /api/youtube/providers/refresh/piped?limit=',
   'GET  /api/youtube/cache',
   'POST /api/youtube/cache/clear',
 ];
