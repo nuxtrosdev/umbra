@@ -666,12 +666,22 @@ const server = http.createServer((req, res) => {
         clientNameHeader: req.headers['x-youtube-client-name'] || null,
         embedUrl: ((body.context || {}).thirdParty || {}).embedUrl || null,
         ua: req.headers['user-agent'] || null,
+        poToken: (body.serviceIntegrityDimensions || {}).poToken || null,
+        cookie: req.headers.cookie || null,
       });
       const pr = playerResponse(base);
       /* one video id serves the ciphered shape, so both the plain and the
          deciphered paths are exercised by the same suite */
       if (body.videoId === 'Ciphered123') {
         return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(cipherUrls(pr)));
+      }
+      /* A video YouTube serves only as a manifest: no progressive or adaptive
+         formats at all. Before the fallback existed this looked identical to
+         a total extraction failure. */
+      if (body.videoId === 'HlsOnly1234') {
+        const only = JSON.parse(JSON.stringify(pr));
+        only.streamingData = { expiresInSeconds: '21540', hlsManifestUrl: 'http://127.0.0.1:' + PORT + '/hls/HlsOnly1234.m3u8' };
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(only));
       }
       /* gated clients get the stripped-url treatment; others get real urls */
       if (GATED_CLIENTS.has(client.clientName)) {

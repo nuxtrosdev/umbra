@@ -78,6 +78,30 @@ export const CLIENTS = {
     },
   },
 
+  /* Safari on desktop. YouTube treats the Safari web client differently from
+     Chrome's and it is the usual fallback once `tv` stops working; it ciphers,
+     which is fine now that we can decipher. */
+  web_safari: {
+    name: 'WEB',
+    id: 1,
+    version: '2.20260725.01.00',
+    jsPlayer: true,
+    gvsToken: true,
+    ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+    extra: {},
+  },
+
+  /* Mobile web. A distinct scoring bucket again, and cheap to try. */
+  mweb: {
+    name: 'MWEB',
+    id: 2,
+    version: '2.20260725.01.00',
+    jsPlayer: true,
+    gvsToken: true,
+    ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+    extra: {},
+  },
+
   /* Cobalt / smart-TV client. Needs the JS player for some videos but is not
      under the GVS token regime, so when it does return plain URLs they work. */
   tv: {
@@ -154,7 +178,7 @@ export const CLIENTS = {
 
 /** Ordered client attempts. Override with UMBRA_YT_CLIENTS=visionos,tv,... */
 export const LADDER = (process.env.UMBRA_YT_CLIENTS ||
-  'visionos,tv,web_embedded,tv_downgraded,android_vr,web')
+  'tv,visionos,web_embedded,tv_downgraded,web_safari,mweb,android_vr,web')
   .split(',')
   .map((s) => s.trim())
   .filter((s) => Object.hasOwn(CLIENTS, s));
@@ -387,8 +411,8 @@ export async function innertubeRequest(endpoint, payload, key, { visitorData = '
  * passing the page's own key when we have it keeps the request consistent with
  * what the embed document would have sent.
  */
-export async function playerRequest(videoId, key, { visitorData = '', cookie = '', apiKey = '' } = {}) {
-  return innertubeRequest('player', {
+export async function playerRequest(videoId, key, { visitorData = '', cookie = '', apiKey = '', poToken = '' } = {}) {
+  const payload = {
     videoId,
     contentCheckOk: true,
     racyCheckOk: true,
@@ -398,7 +422,15 @@ export async function playerRequest(videoId, key, { visitorData = '', cookie = '
         signatureTimestamp: 20073,
       },
     },
-  }, key, { visitorData, cookie, apiKey, videoId });
+  };
+  /* The proof-of-origin token rides on the player request itself. Without it
+     YouTube commonly answers 200 with every good format withheld, which reads
+     downstream as "no playable streams" rather than as a refusal. */
+  if (poToken) payload.serviceIntegrityDimensions = { poToken };
+  /* A signed-in session is the other thing that clears the gate; cookies are
+     supplied by the operator, never collected here. */
+  const jar = cookie || (process.env.UMBRA_YT_COOKIES || '').trim();
+  return innertubeRequest('player', payload, key, { visitorData, cookie: jar, apiKey, videoId });
 }
 
 export { YT_BASE, EMBED_HOST };

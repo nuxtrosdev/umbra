@@ -28,6 +28,7 @@
  */
 import { LADDER, playerRequest, innertubeRequest, getVisitorData } from './innertube.mjs';
 import { getPlayer, resolveFormat, inspect as playerInspect } from './decipher.mjs';
+import { getPoToken, inspect as potInspect } from './potoken.mjs';
 
 const METADATA_CLIENT = process.env.UMBRA_PIPED_LOCAL_CLIENT || 'web';
 
@@ -182,18 +183,25 @@ function blocked(what, json) {
 /** Piped /streams/:videoId, extracted locally through the client ladder. */
 export async function streams(videoId) {
   const vis = (await getVisitorData({})).value;
+  /* Minted once and reused across the ladder: the token is bound to this
+     visitor identity, and asking for a fresh one per client would be both
+     slower and more suspicious. */
+  const pot = await getPoToken(vis);
   let pr = null;
   let used = null;
   const tried = [];
   for (const client of LADDER) {
     try {
-      const j = await playerRequest(videoId, client, { visitorData: vis });
+      const j = await playerRequest(videoId, client, { visitorData: vis, poToken: pot });
       const sd = (j && j.streamingData) || {};
       /* A ciphered format is a usable format now, so it counts when deciding
          whether this client produced anything. Treating only plain `url` as
          success is what made every ciphered video look empty. */
+      /* An HLS manifest is a complete answer by itself — it needs no
+         deciphering and is not subject to per-format gating — so a client
+         that returns one has succeeded even with no usable formats. */
       const any = [...(sd.formats || []), ...(sd.adaptiveFormats || [])]
-        .some((f) => f.url || f.signatureCipher || f.cipher);
+        .some((f) => f.url || f.signatureCipher || f.cipher) || !!sd.hlsManifestUrl;
       if (any) { pr = j; used = client; break; }
       tried.push({ client, note: ((j || {}).playabilityStatus || {}).status || 'no urls' });
       if (!pr && j) pr = j;
@@ -259,7 +267,16 @@ export async function streams(videoId) {
     const r = resolveFormat(f, player);
     if (!r) { unresolved++; continue; }
     if (r.ciphered) ciphered++;
-    all.push({ ...f, url: r.url });
+    /* googlevideo wants the same proof on the media request, not just on the
+       player request; without `pot` those URLs 403 on first byte. */
+    let url = r.url;
+    if (pot) {
+      try {
+        const u = new URL(url);
+        if (!u.searchParams.has('pot')) { u.searchParams.set('pot', pot); url = u.toString(); }
+      } catch { /* leave it alone */ }
+    }
+    all.push({ ...f, url });
   }
   const mapped = all.map(mapStream);
   const videoStreams = mapped.filter((s) => /^video\//.test(s.mimeType));
@@ -304,6 +321,7 @@ export async function streams(videoId) {
     umbraCiphered: ciphered,
     umbraUnresolved: unresolved,
     umbraPlayerError: playerError,
+    umbraPoToken: pot ? 'present' : 'absent',
   };
 }
 
@@ -462,12 +480,13 @@ export async function diagnose(videoId) {
   let player = null;
   let playerError = null;
   try { player = await getPlayer(); } catch (e) { playerError = String(e.message || e).slice(0, 200); }
+  const pot = await getPoToken(vis);
 
   const clients = [];
   for (const client of LADDER) {
     const row = { client };
     try {
-      const j = await playerRequest(videoId, client, { visitorData: vis });
+      const j = await playerRequest(videoId, client, { visitorData: vis, poToken: pot });
       const sd = (j && j.streamingData) || {};
       const raw = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
       row.playability = ((j || {}).playabilityStatus || {}).status || null;
@@ -476,7 +495,11 @@ export async function diagnose(videoId) {
       row.withUrl = raw.filter((f) => f.url).length;
       row.ciphered = raw.filter((f) => !f.url && (f.signatureCipher || f.cipher)).length;
       row.resolved = raw.filter((f) => resolveFormat(f, player)).length;
-      row.usable = row.resolved > 0;
+      row.hls = !!sd.hlsManifestUrl;
+      /* An HLS manifest is a complete answer on its own: it sidesteps
+         per-format gating and needs no deciphering, so a client that offers
+         one is usable even with zero resolvable formats. */
+      row.usable = row.resolved > 0 || row.hls;
     } catch (e) {
       row.error = String(e.message || e).slice(0, 200);
       row.usable = false;
@@ -490,6 +513,7 @@ export async function diagnose(videoId) {
     usable: !!best,
     servedBy: best && best.client,
     player: { ...playerInspect(), error: playerError },
+    poToken: potInspect(),
     clients,
     /* the most common causes, named rather than implied */
     diagnosis: !best
@@ -497,7 +521,9 @@ export async function diagnose(videoId) {
         ? 'every client returned zero formats — this is an egress-level block or an unavailable video'
         : clients.some((c) => c.ciphered > 0)
           ? 'formats arrived ciphered and the player script could not unscramble them' + (playerError ? ': ' + playerError : '')
-          : 'formats arrived but none resolved to a url')
+          : (!pot
+            ? 'formats were withheld and no PO token was available — this is the usual datacentre-IP failure'
+            : 'formats arrived but none resolved to a url'))
       : (best.ciphered > 0 ? 'ciphered formats, deciphered locally' : 'plain urls, no deciphering needed'),
   };
 }

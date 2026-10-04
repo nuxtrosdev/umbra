@@ -11,6 +11,7 @@
  * unit checks on protocol.mjs / html.mjs (no server involved).
  */
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,6 +88,58 @@ async function unit() {
   const P = await import('../server/protocol.mjs');
   const H = await import('../server/html.mjs');
   const Y = await import('../server/youtube.mjs');
+
+  /* ---- proof-of-origin tokens ---- */
+  const PT = await import('../server/potoken.mjs');
+  PT.resetPoTokenCache();
+  delete process.env.UMBRA_YT_POTOKEN;
+  delete process.env.UMBRA_POT_PROVIDER_URL;
+  /* With nothing configured the answer is an empty token, never an exception:
+     no token is a degraded state and the request should still be attempted. */
+  const potNone = await PT.getPoToken('visitor-aaa');
+  ok('with no token source configured the result is empty rather than an error',
+    potNone === '' && PT.inspect().configured === false, JSON.stringify(potNone));
+  ok('an unconfigured token source explains the datacentre failure mode',
+    /datacentre|UMBRA_YT_POTOKEN/.test(PT.inspect().advice || ''), (PT.inspect().advice || '').slice(0, 48));
+
+  process.env.UMBRA_YT_POTOKEN = 'pasted-from-a-real-browser';
+  PT.resetPoTokenCache();
+  ok('a hand-supplied token is used verbatim',
+    (await PT.getPoToken('visitor-aaa')) === 'pasted-from-a-real-browser' &&
+    PT.inspect().source === 'env');
+  /* Tokens are bound to a visitor identity, so the cache must key on it;
+     handing one identity's token to another looks like forgery to YouTube. */
+  await PT.getPoToken('visitor-bbb');
+  ok('the token cache is keyed per visitor identity', PT.inspect().cached === 2,
+    'cached=' + PT.inspect().cached);
+  delete process.env.UMBRA_YT_POTOKEN;
+  PT.resetPoTokenCache();
+
+  /* A bgutil-style provider is the maintainable option for a long-lived
+     deployment, so the HTTP contract gets exercised against a stub. */
+  const potSrv = http.createServer((rq, rs) => {
+    let b = '';
+    rq.on('data', (c) => { b += c; });
+    rq.on('end', () => {
+      const seen = JSON.parse(b || '{}');
+      rs.writeHead(200, { 'content-type': 'application/json' });
+      rs.end(JSON.stringify({ po_token: 'minted-for-' + (seen.visitor_data || seen.visitorData || '?') }));
+    });
+  });
+  await new Promise((r) => potSrv.listen(0, '127.0.0.1', r));
+  process.env.UMBRA_POT_PROVIDER_URL = 'http://127.0.0.1:' + potSrv.address().port;
+  const potMinted = await PT.getPoToken('visitor-ccc');
+  ok('a bgutil-style provider mints a token bound to the visitor we will use',
+    potMinted === 'minted-for-visitor-ccc' && PT.inspect().source === 'provider', potMinted);
+  /* A dead provider must not take playback down with it. */
+  process.env.UMBRA_POT_PROVIDER_URL = 'http://127.0.0.1:1';
+  PT.resetPoTokenCache();
+  const potDead = await PT.getPoToken('visitor-ddd');
+  ok('an unreachable token provider degrades instead of throwing',
+    potDead === '' && !!PT.inspect().lastError, String(PT.inspect().lastError).slice(0, 40));
+  delete process.env.UMBRA_POT_PROVIDER_URL;
+  PT.resetPoTokenCache();
+  await new Promise((r) => potSrv.close(r));
 
   /* ---- signature + n deciphering ---- */
   const DC = await import('../server/decipher.mjs');
@@ -293,10 +346,18 @@ async function unit() {
   ok('synthesized tokens are distinct per call but each well-formed',
     IT.synthesizeVisitorData() !== IT.synthesizeVisitorData());
 
-  /* The production default must lead with a client that does not need the JS
-     player, because Umbra cannot unscramble signature-ciphered urls. */
-  ok('default ladder leads with a non-JS-player client',
-    IT.LADDER.length >= 2 && IT.CLIENTS[IT.LADDER[0]].jsPlayer === false, IT.LADDER.join(','));
+  /* This assertion used to demand a non-JS-player client first, because Umbra
+     could not unscramble ciphered urls and a ciphering client was a dead end.
+     Deciphering landed, so the cost of ciphering is now a few milliseconds and
+     the ordering question became a different one: which client is least likely
+     to be refused. Current guidance puts `tv` first, so the ladder leads with
+     it and keeps a spread of scoring buckets behind it rather than a spread of
+     cipher behaviours. */
+  ok('default ladder leads with the least-scrutinised client',
+    IT.LADDER.length >= 2 && IT.LADDER[0] === 'tv', IT.LADDER.join(','));
+  ok('the ladder spans several distinct scoring buckets',
+    ['tv', 'web_embedded', 'web_safari', 'mweb'].every((c) => IT.LADDER.includes(c)),
+    IT.LADDER.join(','));
   ok('every ladder entry is a known client', IT.LADDER.every((k) => !!IT.CLIENTS[k]));
 
   const embCtx = IT.buildContext('web_embedded', { visitorData: realVisitor });
@@ -898,6 +959,29 @@ async function wire() {
     adiag.j.data.player.loaded === true && adiag.j.data.player.sigName === 'zx' &&
     adiag.j.data.player.nsigName === 'ndx',
     JSON.stringify(adiag.j.data.player.sigName) + '/' + JSON.stringify(adiag.j.data.player.nsigName));
+
+  /* An HLS-only video. YouTube increasingly answers this way, and a manifest
+     is a complete, playable answer: it needs no deciphering and is not subject
+     to per-format gating. Umbra used to read "zero formats" as total failure
+     and discard a working stream. */
+  const ahls = await API('/streams/HlsOnly1234');
+  ok('a video served only as an hls manifest is playable rather than discarded',
+    ahls.status === 200 && !!ahls.j.data.hls && /HlsOnly1234\.m3u8/.test(ahls.j.data.hls),
+    'hls=' + String(ahls.j.data && ahls.j.data.hls).slice(0, 60));
+
+  const ahdiag = await API('/diagnose/HlsOnly1234');
+  ok('diagnose counts an hls-only client as usable, not as a failure',
+    ahdiag.status === 200 && ahdiag.j.data.usable === true &&
+    ahdiag.j.data.clients.every((c) => c.formats === 0) &&
+    ahdiag.j.data.clients.some((c) => c.hls === true),
+    ahdiag.j.data.diagnosis);
+
+  /* The PO token travels on the player request itself; the mock records what
+     it was sent so we can prove the wiring rather than trust it. */
+  ok('diagnose reports whether a proof-of-origin token was available',
+    adiag.j.data.poToken && typeof adiag.j.data.poToken.configured === 'boolean' &&
+    typeof adiag.j.data.poToken.advice === 'string',
+    'configured=' + adiag.j.data.poToken.configured);
 
   const acache = await API('/cache');
   ok('the cache exposes its own statistics',

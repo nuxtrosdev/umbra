@@ -988,7 +988,14 @@ ${payload.ok
 <div id="player" data-info='${ji(payload).replace(/'/g, '&#39;')}'></div>`;
   const script = fs.readFileSync(path.join(PUB, 'player.js'), 'utf8');
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- NOT no-referrer. This capsule can fall back to YouTube's embedded
+     player, and that player validates the embed against the Referer it
+     receives: with none, it refuses with "Error 153 — video player
+     configuration error" and shows nothing. strict-origin-when-cross-origin
+     sends the origin only, which satisfies the check without leaking the
+     path or query of whatever the viewer was watching. -->
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>umbra player · ${esc(payload.title || payload.videoId)}</title><style>${capsuleCss}
 #player{margin-top:12px}
 .ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}

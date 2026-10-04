@@ -178,6 +178,10 @@ format metadata, and what a caller does with those URLs is its own decision.
 | `UMBRA_YT_VISITOR_TTL` | `21600000` | Visitor identity cache lifetime, ms. |
 | `UMBRA_YT_EMBED_URL` | `https://www.reddit.com/` | Referring origin presented for embedded playback. |
 | `UMBRA_YT_BASE` | — | Override the YouTube origin. Used by the test suite to point at a mock. |
+| `UMBRA_YT_POTOKEN` | — | A proof-of-origin token lifted from a browser session. See below. |
+| `UMBRA_POT_PROVIDER_URL` | — | A bgutil-style PO token minting service, e.g. `http://127.0.0.1:4416`. |
+| `UMBRA_YT_COOKIES` | — | Cookie header for a signed-in YouTube session. |
+| `UMBRA_POT_TTL` | `21600000` | PO token cache lifetime, ms. |
 | `UMBRA_API_PUBLIC` | off | Serve `/api/youtube/*` to callers with no Umbra session. |
 | `UMBRA_PROVIDERS` | `innertube,piped,invidious,poketube,newpipe,youtubejs,ytdlp` | Provider order and membership. |
 | `UMBRA_INVIDIOUS_INSTANCES` | built-in seed list | Invidious instance pool. |
@@ -190,6 +194,40 @@ format metadata, and what a caller does with those URLs is its own decision.
 | `UMBRA_PROVIDER_COOLDOWN` | `120000` | Base cooldown, ms. Doubles per consecutive bench. |
 | `UMBRA_PROVIDER_MAX_ATTEMPTS` | `3` | Instances tried per call, per provider. |
 | `UMBRA_CACHE_MAX` | `500` | Metadata cache entries. |
+
+### When playback fails: proof-of-origin
+
+If every video reports no playable streams, the cause is usually not
+extraction. Since 2024 YouTube scores each player request and, for most
+clients, expects a **proof-of-origin token** minted by its own BotGuard
+JavaScript. A request without one is either refused outright or — more
+confusingly — answered with `200 OK` and every good format withheld. From the
+outside those two outcomes look identical to a broken extractor.
+
+The giveaway is in `GET /api/youtube/diagnose/<videoId>`:
+
+- formats arrive but are **ciphered and unresolved** → a deciphering problem;
+- formats arrive and resolve → playback works;
+- **no formats at all, across every client** → a proof-of-origin problem.
+
+IP reputation sets the difficulty. A home connection often needs nothing. A
+datacentre address — Codespaces, a VPS, CI — is scored far more harshly, and
+**no combination of flags fixes a flagged address**. In rough order of effort:
+
+1. **Paste a token.** Open YouTube in a normal browser, copy the `poToken`
+   from a `/youtubei/v1/player` request in devtools, set `UMBRA_YT_POTOKEN`.
+   Costs nothing, lasts hours, and is the fastest way to confirm the diagnosis.
+2. **Run a provider.** `bgutil-ytdlp-pot-provider` serves tokens over HTTP;
+   point `UMBRA_POT_PROVIDER_URL` at it. This is the durable answer, because
+   tokens are minted on demand instead of expiring overnight.
+3. **Add cookies.** `UMBRA_YT_COOKIES` from a signed-in session. Helpful, but
+   no longer sufficient on its own.
+4. **Change egress.** If the above still fails, the address itself is the
+   problem and only residential egress will clear it.
+
+Umbra degrades rather than failing when none of these are configured: it still
+tries, falls back through its client ladder, and will serve an HLS manifest if
+that is all YouTube offers. `diagnose` reports which of these applied.
 
 ## Tests
 
