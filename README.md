@@ -221,6 +221,28 @@ and the failure looks like a block. It extracts with a brace walker rather
 than a regex, because the JSON contains braces inside strings and the page
 carries a second, similar-looking object.
 
+### InnerTube clients
+
+Umbra talks to `/youtubei/v1/player` as eleven different clients and walks
+them in order until one returns something playable. They are not
+interchangeable: each is scored separately by YouTube, and they differ in
+whether they cipher URLs and whether they want a PO token.
+
+| Client | Ciphers | Note |
+| --- | --- | --- |
+| `tv` | yes | Least scrutinised; usually works with no credentials. |
+| `ios` | no | Most likely to return an **HLS manifest** — playable without per-format deciphering and not gated format by format. |
+| `visionos` | no | Plain URLs when it answers. |
+| `web_embedded` | yes | Embed surface, separate scoring. |
+| `android` | no | Separate bucket from anything web-shaped; wants a PO token more often now. |
+| `web_safari`, `mweb`, `web` | yes | Browser buckets. |
+| `web_music` | yes | YouTube Music; occasionally answers for a plain video. |
+| `android_vr` | no | Ranked last; its formats have been 403ing. |
+
+Order comes from `UMBRA_YT_CLIENTS` if you want to override it. Which clients
+work changes every few weeks — yt-dlp's extractor wiki is the live source of
+truth.
+
 ### When playback fails: proof-of-origin
 
 If every video reports no playable streams, the cause is usually not

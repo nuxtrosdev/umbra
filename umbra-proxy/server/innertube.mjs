@@ -78,6 +78,56 @@ export const CLIENTS = {
     },
   },
 
+  /* The iOS app. Worth placing high for a reason that is easy to miss: it is
+     the client most likely to answer with an HLS manifest rather than a list
+     of individual formats. A manifest is a single URL that needs no
+     per-format deciphering and is not gated format by format, so when
+     everything else comes back with an empty format table this is the one
+     that can still produce something playable. */
+  ios: {
+    name: 'IOS',
+    id: 5,
+    version: '20.10.4',
+    jsPlayer: false,
+    gvsToken: true,
+    ua: 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X; en_US)',
+    extra: {
+      deviceMake: 'Apple',
+      deviceModel: 'iPhone16,2',
+      osName: 'iPhone',
+      osVersion: '18.3.2.22D82',
+    },
+  },
+
+  /* The Android app. A separate scoring bucket from anything web-shaped, and
+     it does not cipher. It now wants a PO token more often than it used to,
+     which is precisely why it sits behind the clients that do not. */
+  android: {
+    name: 'ANDROID',
+    id: 3,
+    version: '20.10.38',
+    jsPlayer: false,
+    gvsToken: true,
+    ua: 'com.google.android.youtube/20.10.38 (Linux; U; Android 14; en_US) gzip',
+    extra: {
+      androidSdkVersion: 34,
+      osName: 'Android',
+      osVersion: '14',
+    },
+  },
+
+  /* YouTube Music. A different product surface with its own scoring, which
+     occasionally answers for a plain video when the video clients will not. */
+  web_music: {
+    name: 'WEB_REMIX',
+    id: 67,
+    version: '1.20250310.01.00',
+    jsPlayer: true,
+    gvsToken: true,
+    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    extra: {},
+  },
+
   /* Safari on desktop. YouTube treats the Safari web client differently from
      Chrome's and it is the usual fallback once `tv` stops working; it ciphers,
      which is fine now that we can decipher. */
@@ -178,7 +228,7 @@ export const CLIENTS = {
 
 /** Ordered client attempts. Override with UMBRA_YT_CLIENTS=visionos,tv,... */
 export const LADDER = (process.env.UMBRA_YT_CLIENTS ||
-  'tv,visionos,web_embedded,tv_downgraded,web_safari,mweb,android_vr,web')
+  'tv,ios,visionos,web_embedded,tv_downgraded,android,web_safari,mweb,web_music,android_vr,web')
   .split(',')
   .map((s) => s.trim())
   .filter((s) => Object.hasOwn(CLIENTS, s));

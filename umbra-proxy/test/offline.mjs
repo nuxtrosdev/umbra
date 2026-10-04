@@ -426,8 +426,30 @@ async function unit() {
      cipher behaviours. */
   ok('default ladder leads with the least-scrutinised client',
     IT.LADDER.length >= 2 && IT.LADDER[0] === 'tv', IT.LADDER.join(','));
+  /* IOS and ANDROID contexts are rejected outright when the device fields
+     are missing, and the failure looks like a generic refusal rather than a
+     malformed request, so it is worth pinning. */
+  const iosC = IT.buildContext('ios', {}).client;
+  ok('the ios client sends the device fields its context requires',
+    iosC.clientName === 'IOS' && iosC.deviceMake === 'Apple' && !!iosC.deviceModel &&
+    iosC.osName === 'iPhone' && !!iosC.osVersion, iosC.deviceModel + '/' + iosC.osVersion);
+  const andC = IT.buildContext('android', {}).client;
+  ok('the android client sends an sdk version, not just a name',
+    andC.clientName === 'ANDROID' && andC.androidSdkVersion === 34 && andC.osName === 'Android',
+    String(andC.androidSdkVersion));
+  /* Neither app client ciphers, so neither should be waiting on the JS
+     player — if they were, they would be no cheaper than the web clients. */
+  ok('the app clients need no js player',
+    IT.CLIENTS.ios.jsPlayer === false && IT.CLIENTS.android.jsPlayer === false);
+  /* ios is ranked above android deliberately: it is the client most likely
+     to return an HLS manifest, which is playable without per-format
+     deciphering and is not gated format by format. */
+  ok('ios is tried before android',
+    IT.LADDER.indexOf('ios') < IT.LADDER.indexOf('android'), IT.LADDER.join(','));
+
   ok('the ladder spans several distinct scoring buckets',
-    ['tv', 'web_embedded', 'web_safari', 'mweb'].every((c) => IT.LADDER.includes(c)),
+    ['tv', 'ios', 'android', 'web_embedded', 'web_safari', 'mweb', 'web_music']
+      .every((c) => IT.LADDER.includes(c)),
     IT.LADDER.join(','));
   ok('every ladder entry is a known client', IT.LADDER.every((k) => !!IT.CLIENTS[k]));
 
