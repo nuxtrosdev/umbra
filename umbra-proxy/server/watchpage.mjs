@@ -112,9 +112,15 @@ export async function playerResponse(videoId) {
       if (!pr) {
         /* Distinguish the consent wall from a markup change: the operator can
            act on one and not the other. */
-        const why = /consent\.youtube\.com|CONSENT_/i.test(html)
-          ? 'consent wall was served instead of the page'
-          : 'no ytInitialPlayerResponse in the html';
+        /* Order matters. A bot wall page also references the consent
+           domain, so checking consent first reports a cookie problem for
+           what is actually YouTube refusing the address — and sends the
+           operator chasing a cookie that was never missing. */
+        const why = /sign ?in to confirm|not a bot|LOGIN_REQUIRED/i.test(html)
+          ? 'sign-in wall: YouTube refused this address'
+          : /consent\.youtube\.com\/m|CONSENT_WALL|before you continue/i.test(html)
+            ? 'consent wall was served instead of the page'
+            : 'no ytInitialPlayerResponse in the html';
         tried.push({ surface: s.name, note: why });
         continue;
       }

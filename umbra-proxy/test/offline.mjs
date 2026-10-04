@@ -119,6 +119,47 @@ async function unit() {
   ok('the error page still renders the older flat tried shape',
     /pipedapi\.x {2}— {2}http 500/.test(TB.explainTried([{ instance: 'pipedapi.x', note: 'http 500' }])));
 
+  /* ---- verdicts: turning failure notes into a conclusion ---- */
+  const V = await import('../server/verdict.mjs');
+  /* This fixture is a real failure report from a Codespace, kept verbatim
+     because it is the case the feature exists for. */
+  const realWorld = [
+    { provider: 'invidious', note: 'no invidious instance answered', instances: [
+      { instance: 'invidious:inv.nadeko.net', note: 'http 403' },
+      { instance: 'invidious:yewtu.be', note: 'http 403' }] },
+    { provider: 'innertube', note: 'no innertube instance answered', instances: [
+      { instance: 'innertube:in-process', note: 'no playable formats and no hls manifest' }] },
+    { provider: 'piped', note: 'no piped instance answered', instances: [
+      { instance: 'https://api.piped.private.coffee', note: 'http 500' }] },
+    { provider: 'watchpage', note: 'no watchpage instance answered', instances: [
+      { instance: 'watchpage:in-process', note: 'watch page extraction failed (watch: LOGIN_REQUIRED: Sign in to confirm you\u2019re not a bot)' }] },
+  ];
+  const vReal = V.verdict(realWorld, { hasPoToken: false, hasCookies: false });
+  /* A bot wall outranks the 403s and 500s around it: those are usually
+     downstream of it, and reporting "instances are sick" would send the
+     operator to fix the wrong thing. */
+  ok('a sign-in wall is diagnosed as a flagged address, outranking noisier failures',
+    vReal && vReal.kind === 'bot-wall' && /bot-flagged/.test(vReal.headline), vReal && vReal.kind);
+  ok('an unconfigured bot-wall verdict names the two things that could answer it',
+    /UMBRA_YT_COOKIES/.test(vReal.detail) && /UMBRA_YT_POTOKEN/.test(vReal.detail));
+  ok('with credentials already set the verdict stops suggesting them and points at egress',
+    /residential/.test(V.verdict(realWorld, { hasPoToken: true, hasCookies: true }).detail));
+
+  /* A 200 with the formats withheld is a different failure from a refusal,
+     and has a different fix. */
+  const vGated = V.verdict([{ provider: 'innertube', note: 'no playable formats and no hls manifest' }], {});
+  ok('withheld formats are diagnosed as proof-of-origin, not as a block',
+    vGated && vGated.kind === 'gated', vGated && vGated.kind);
+  const vDead = V.verdict([{ provider: 'piped', note: 'connect ECONNREFUSED 127.0.0.1:1' },
+    { provider: 'invidious', note: 'getaddrinfo ENOTFOUND nope.invalid' }], {});
+  ok('connection failures across the board are diagnosed as having no route out',
+    vDead && vDead.kind === 'no-route', vDead && vDead.kind);
+  const vSick = V.verdict([{ provider: 'piped', note: 'http 502' }], {});
+  ok('upstream server errors are blamed on the instances, not on us',
+    vSick && vSick.kind === 'upstream-sick', vSick && vSick.kind);
+  ok('an unrecognisable failure produces no verdict rather than a guess',
+    V.verdict([{ provider: 'x', note: 'something entirely novel happened' }], {}) === null);
+
   /* ---- proof-of-origin tokens ---- */
   const PT = await import('../server/potoken.mjs');
   PT.resetPoTokenCache();

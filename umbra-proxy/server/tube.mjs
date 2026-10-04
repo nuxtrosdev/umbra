@@ -6,6 +6,8 @@
  * the tab system, and every image is already a wire URL, so nothing here
  * causes the browser to talk to Google or to a Piped instance directly.
  */
+import { verdict } from './verdict.mjs';
+
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 export function fmtDur(s) {
@@ -48,6 +50,10 @@ a.vcard:hover{border-color:rgba(157,140,255,.5);background:rgba(255,255,255,.06)
 .cmt .tav{width:30px;height:30px}
 .cmt b{color:#d8e3f2;font-size:12px}
 .cmt p{margin:4px 0 0;color:#a8b5c9;font-size:13px;white-space:pre-wrap}
+.verdict{margin-top:14px;padding:12px 14px;border-radius:12px;
+ background:rgba(255,186,120,.08);border:1px solid rgba(255,186,120,.28)}
+.verdict strong{display:block;color:#ffcf9b;font-size:14px;margin-bottom:5px}
+.verdict p{margin:0;color:#d7dfea;font-size:13px;line-height:1.55}
 `;
 
 function card(v) {
@@ -179,6 +185,16 @@ export function explainTried(tried) {
   return lines.join('\n');
 }
 
+/** The conclusion, stated rather than left for the reader to infer. */
+function verdictBlock(tried) {
+  const v = verdict(tried, {
+    hasPoToken: !!(process.env.UMBRA_YT_POTOKEN || process.env.UMBRA_POT_PROVIDER_URL),
+    hasCookies: !!process.env.UMBRA_YT_COOKIES,
+  });
+  if (!v) return '';
+  return `<div class="verdict"><strong>${esc(v.headline)}</strong><p>${esc(v.detail)}</p></div>`;
+}
+
 export function errorDoc(what, e, tried) {
   return `<main>
   <header><span class="kicker">umbra tube · unavailable</span>
@@ -186,7 +202,8 @@ export function errorDoc(what, e, tried) {
   <p class="muted">Every backend was tried and none answered. The pool is federated precisely because instances
   get blocked, rate-limited or simply go down — but when all of them fail at once it is usually YouTube squeezing
   the whole network, or this machine having no route to it. The reasons below say which.</p>
-  ${searchForm()}</header>
+  ${searchForm()}
+  ${verdictBlock(tried)}</header>
   <h2>What was tried</h2>
   <pre>${esc(explainTried(tried) || String(e && e.message || e))}</pre>
   </main>`;

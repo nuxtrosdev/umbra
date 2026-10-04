@@ -14,6 +14,7 @@
  */
 
 import * as pm from './provider-manager.mjs';
+import { verdict } from './verdict.mjs';
 import { stats as cacheStats, clear as cacheClear } from './cache.mjs';
 import * as invidious from './providers/invidious.mjs';
 import * as piped from './piped.mjs';
@@ -44,10 +45,18 @@ function errorBody(e) {
     code === 'BAD_ID' ? 'That id is not valid.'
       : code === 'NO_PROVIDER' ? 'No configured backend offers this.'
         : 'Could not retrieve this right now. Every backend was tried.';
+  const v = verdict(e && e.tried, {
+    hasPoToken: !!(process.env.UMBRA_YT_POTOKEN || process.env.UMBRA_POT_PROVIDER_URL),
+    hasCookies: !!process.env.UMBRA_YT_COOKIES,
+  });
   return {
     ok: false,
     error: { code: code || 'UPSTREAM_FAILED', message: reason },
     meta: {
+      /* The conclusion, not just the evidence. Six failure notes that add up
+         to "this address is bot-flagged" should not need a human to add them
+         up every time. */
+      verdict: v || undefined,
       tried: (e && e.tried || []).map((t) => ({
         provider: t.provider,
         attempts: (t.instances || []).length || undefined,
