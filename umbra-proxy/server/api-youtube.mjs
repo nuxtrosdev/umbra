@@ -17,6 +17,7 @@ import * as pm from './provider-manager.mjs';
 import { stats as cacheStats, clear as cacheClear } from './cache.mjs';
 import * as invidious from './providers/invidious.mjs';
 import * as piped from './piped.mjs';
+import * as local from './piped-local.mjs';
 
 const MAX_Q = 300;
 
@@ -88,6 +89,17 @@ export async function handle(sub, params, { method = 'GET' } = {}) {
         return { status: 200, body: ok({ provider: seg[2], instances: picked }) };
       }
       if (!seg[1]) return { status: 200, body: ok(pm.providers()) };
+    }
+
+    /* Why a video produced no streams, client by client. The single most
+       useful endpoint when playback breaks, because "no playable streams"
+       on its own does not distinguish a bot gate from a reshaped player. */
+    if (head === 'diagnose' && seg[1]) {
+      const vid = String(seg[1]).slice(0, 32);
+      if (!/^[\w-]{11}$/.test(vid)) {
+        return { status: 400, body: { ok: false, error: { code: 'BAD_ID', message: 'That id is not valid.' } } };
+      }
+      return { status: 200, body: ok(await local.diagnose(vid)) };
     }
 
     if (head === 'cache') {
@@ -176,6 +188,7 @@ export const ENDPOINTS = [
   'GET  /api/youtube/providers/survey',
   'POST /api/youtube/providers/refresh/invidious?limit=',
   'POST /api/youtube/providers/refresh/piped?limit=',
+  'GET  /api/youtube/diagnose/:id',
   'GET  /api/youtube/cache',
   'POST /api/youtube/cache/clear',
 ];

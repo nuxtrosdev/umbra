@@ -27,6 +27,7 @@
  * path, at the cost of being slightly less precise about ordering.
  */
 import { LADDER, playerRequest, innertubeRequest, getVisitorData } from './innertube.mjs';
+import { getPlayer, resolveFormat, inspect as playerInspect } from './decipher.mjs';
 
 const METADATA_CLIENT = process.env.UMBRA_PIPED_LOCAL_CLIENT || 'web';
 
@@ -188,7 +189,11 @@ export async function streams(videoId) {
     try {
       const j = await playerRequest(videoId, client, { visitorData: vis });
       const sd = (j && j.streamingData) || {};
-      const any = [...(sd.formats || []), ...(sd.adaptiveFormats || [])].some((f) => f.url);
+      /* A ciphered format is a usable format now, so it counts when deciding
+         whether this client produced anything. Treating only plain `url` as
+         success is what made every ciphered video look empty. */
+      const any = [...(sd.formats || []), ...(sd.adaptiveFormats || [])]
+        .some((f) => f.url || f.signatureCipher || f.cipher);
       if (any) { pr = j; used = client; break; }
       tried.push({ client, note: ((j || {}).playabilityStatus || {}).status || 'no urls' });
       if (!pr && j) pr = j;
@@ -197,7 +202,8 @@ export async function streams(videoId) {
     }
   }
   if (!pr) {
-    const err = new Error('local extraction failed for ' + videoId);
+    const err = new Error('local extraction failed for ' + videoId
+      + ' (' + tried.map((t) => t.client + ': ' + t.note).join('; ') + ')');
     err.tried = tried;
     throw err;
   }
@@ -234,7 +240,27 @@ export async function streams(videoId) {
     };
   };
 
-  const all = [...(sd.formats || []), ...(sd.adaptiveFormats || [])].filter((f) => f.url);
+  /* Resolve every format through the player script. Loading base.js can
+     fail (network, or YouTube reshaping it); that is survivable as long as
+     some formats carried a plain url, so the failure is recorded and the
+     plain ones still play rather than the whole page dying. */
+  let player = null;
+  let playerError = null;
+  const raw = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
+  const needsPlayer = raw.some((f) => !f.url && (f.signatureCipher || f.cipher));
+  if (raw.length) {
+    try { player = await getPlayer(); } catch (e) { playerError = String(e.message || e).slice(0, 160); }
+  }
+
+  let ciphered = 0;
+  let unresolved = 0;
+  const all = [];
+  for (const f of raw) {
+    const r = resolveFormat(f, player);
+    if (!r) { unresolved++; continue; }
+    if (r.ciphered) ciphered++;
+    all.push({ ...f, url: r.url });
+  }
   const mapped = all.map(mapStream);
   const videoStreams = mapped.filter((s) => /^video\//.test(s.mimeType));
   const audioStreams = mapped.filter((s) => /^audio\//.test(s.mimeType))
@@ -275,6 +301,9 @@ export async function streams(videoId) {
     /* provenance beyond the Piped contract, harmless to other clients */
     umbraClient: used,
     umbraTried: tried,
+    umbraCiphered: ciphered,
+    umbraUnresolved: unresolved,
+    umbraPlayerError: playerError,
   };
 }
 
@@ -418,3 +447,57 @@ export async function handle(pathname, params = new URLSearchParams()) {
 }
 
 export { METADATA_CLIENT };
+
+/**
+ * Why a video did or did not produce streams.
+ *
+ * "No playable streams" is the least useful error this proxy can emit: it
+ * collapses a bot gate, a reshaped player script and an age restriction into
+ * one sentence. This walks the whole ladder without short-circuiting and
+ * reports what each client actually returned, so the cause is visible rather
+ * than guessed at.
+ */
+export async function diagnose(videoId) {
+  const vis = (await getVisitorData({})).value;
+  let player = null;
+  let playerError = null;
+  try { player = await getPlayer(); } catch (e) { playerError = String(e.message || e).slice(0, 200); }
+
+  const clients = [];
+  for (const client of LADDER) {
+    const row = { client };
+    try {
+      const j = await playerRequest(videoId, client, { visitorData: vis });
+      const sd = (j && j.streamingData) || {};
+      const raw = [...(sd.formats || []), ...(sd.adaptiveFormats || [])];
+      row.playability = ((j || {}).playabilityStatus || {}).status || null;
+      row.reason = ((j || {}).playabilityStatus || {}).reason || null;
+      row.formats = raw.length;
+      row.withUrl = raw.filter((f) => f.url).length;
+      row.ciphered = raw.filter((f) => !f.url && (f.signatureCipher || f.cipher)).length;
+      row.resolved = raw.filter((f) => resolveFormat(f, player)).length;
+      row.usable = row.resolved > 0;
+    } catch (e) {
+      row.error = String(e.message || e).slice(0, 200);
+      row.usable = false;
+    }
+    clients.push(row);
+  }
+
+  const best = clients.find((c) => c.usable) || null;
+  return {
+    videoId,
+    usable: !!best,
+    servedBy: best && best.client,
+    player: { ...playerInspect(), error: playerError },
+    clients,
+    /* the most common causes, named rather than implied */
+    diagnosis: !best
+      ? (clients.every((c) => c.formats === 0)
+        ? 'every client returned zero formats — this is an egress-level block or an unavailable video'
+        : clients.some((c) => c.ciphered > 0)
+          ? 'formats arrived ciphered and the player script could not unscramble them' + (playerError ? ': ' + playerError : '')
+          : 'formats arrived but none resolved to a url')
+      : (best.ciphered > 0 ? 'ciphered formats, deciphered locally' : 'plain urls, no deciphering needed'),
+  };
+}

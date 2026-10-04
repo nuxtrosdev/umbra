@@ -154,6 +154,25 @@ const GATED_CLIENTS = new Set(['WEB', 'ANDROID_VR', 'MWEB', 'WEB_CREATOR']);
 export const hits = [];
 const HITS = hits;
 
+/**
+ * Re-pack formats the way YouTube does for most real videos: no `url`, a
+ * `signatureCipher` carrying a scrambled `s` plus the base url, and an `n`
+ * parameter that still needs its own transform.
+ */
+function cipherUrls(pr) {
+  const out = JSON.parse(JSON.stringify(pr));
+  for (const list of ['formats', 'adaptiveFormats']) {
+    for (const f of out.streamingData[list] || []) {
+      if (!f.url) continue;
+      const u = new URL(f.url);
+      u.searchParams.set('n', 'XYZ');
+      f.signatureCipher = new URLSearchParams({ s: 'abcdefgh', sp: 'sig', url: u.toString() }).toString();
+      delete f.url;
+    }
+  }
+  return out;
+}
+
 function stripUrls(pr) {
   const out = JSON.parse(JSON.stringify(pr));
   for (const list of ['formats', 'adaptiveFormats']) {
@@ -494,6 +513,34 @@ const server = http.createServer((req, res) => {
       ],
     }));
   }
+  /* ---- the player script, for signature + n deciphering --------------
+     Not a stub: this carries the same *shapes* the real base.js uses -- a
+     helper object of primitive transforms, a signature function that calls
+     into it, and an n-transform reached through an array reference. The
+     extractor has to find all of that by pattern, exactly as it does in
+     production, so a regex that stops matching real YouTube will usually
+     stop matching this too. */
+  if (p === '/iframe_api') {
+    HITS.push({ path: p, method: req.method });
+    return send(res, 200, { 'content-type': 'text/javascript' },
+      'var a="/s/player/deadbeef/player_ias.vflset/en_US/base.js";');
+  }
+  if (/^\/s\/player\/[0-9a-f]+\/player_ias\.vflset\/en_US\/base\.js$/.test(p)) {
+    HITS.push({ path: '/base.js', method: req.method });
+    return send(res, 200, { 'content-type': 'text/javascript' }, [
+      'var Pq={',
+      ' Wx:function(a){a.reverse()},',
+      ' Lm:function(a,b){a.splice(0,b)},',
+      ' Rt:function(a,b){var c=a[0];a[0]=a[b%a.length];a[b%a.length]=c}',
+      '};',
+      'var zx=function(a){a=a.split("");Pq.Wx(a);Pq.Lm(a,2);Pq.Rt(a,3);return a.join("")};',
+      'var ndx=function(a){var b=a.split("");b.reverse();return "N"+b.join("")};',
+      'var nArr=[ndx];',
+      'function setup(c){var b;if((b=c.get("n"))&&(b=nArr[0](b))){c.set("n",b)}return c}',
+      'var noise=function(){return "/"+"not a regex"};',
+    ].join('\n'));
+  }
+
   /* ---- innertube metadata endpoints, for the LOCAL piped instance --------
      Renderer-shaped like the real thing, deliberately nested at an awkward
      depth so the recursive collector is what finds them, not a fixed path. */
@@ -621,6 +668,11 @@ const server = http.createServer((req, res) => {
         ua: req.headers['user-agent'] || null,
       });
       const pr = playerResponse(base);
+      /* one video id serves the ciphered shape, so both the plain and the
+         deciphered paths are exercised by the same suite */
+      if (body.videoId === 'Ciphered123') {
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(cipherUrls(pr)));
+      }
       /* gated clients get the stripped-url treatment; others get real urls */
       if (GATED_CLIENTS.has(client.clientName)) {
         return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(stripUrls(pr)));

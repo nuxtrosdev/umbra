@@ -88,6 +88,58 @@ async function unit() {
   const H = await import('../server/html.mjs');
   const Y = await import('../server/youtube.mjs');
 
+  /* ---- signature + n deciphering ---- */
+  const DC = await import('../server/decipher.mjs');
+  const PLAYER_SRC = [
+    'var Pq={',
+    ' Wx:function(a){a.reverse()},',
+    ' Lm:function(a,b){a.splice(0,b)},',
+    ' Rt:function(a,b){var c=a[0];a[0]=a[b%a.length];a[b%a.length]=c}',
+    '};',
+    'var zx=function(a){a=a.split("");Pq.Wx(a);Pq.Lm(a,2);Pq.Rt(a,3);return a.join("")};',
+    'var ndx=function(a){var b=a.split("");b.reverse();return "N"+b.join("")};',
+    'var nArr=[ndx];',
+    'function setup(c){var b;if((b=c.get("n"))&&(b=nArr[0](b))){c.set("n",b)}return c}',
+  ].join('\n');
+
+  ok('brace matching survives strings and regex literals in minified source',
+    DC.balanced('x={a:"}}}",b:/[}]/,c:{d:1}}', 2).body === '{a:"}}}",b:/[}]/,c:{d:1}}');
+  const sigx = DC.extractSig(PLAYER_SRC);
+  ok('the signature function and its helper object are found by shape',
+    sigx.name === 'zx' && /Pq\s*=/.test(sigx.source) && /__sig=/.test(sigx.source), sigx.name + ' via ' + sigx.via);
+  const nx = DC.extractNsig(PLAYER_SRC);
+  ok('the n-transform is found through its array reference',
+    nx.name === 'ndx' && /__nsig=/.test(nx.source), nx.name + ' via ' + nx.via);
+
+  const PL2 = DC.compile(PLAYER_SRC);
+  ok('the extracted signature transform actually runs',
+    PL2.decipher('abcdefgh') === 'cedfba', PL2.decipher('abcdefgh'));
+  ok('the extracted n transform actually runs',
+    PL2.transformN('XYZ') === 'NZYX', PL2.transformN('XYZ'));
+  ok('player code runs sandboxed with no reach into this process',
+    (() => {
+      try {
+        DC.compile(PLAYER_SRC.replace('a.reverse()', 'process.exit(1)')).decipher('abc');
+        return false;
+      } catch { return true; }
+    })());
+
+  const rc = DC.resolveFormat({ signatureCipher: new URLSearchParams({
+    s: 'abcdefgh', sp: 'sig', url: 'https://r1.googlevideo.com/v?n=XYZ&itag=18' }).toString() }, PL2);
+  ok('a ciphered format becomes a playable url with the signature attached',
+    rc.ciphered === true && /[?&]sig=cedfba/.test(rc.url), rc.url);
+  ok('the n parameter is transformed, which is what stops the throttling',
+    /[?&]n=NZYX/.test(rc.url) && !/[?&]n=XYZ/.test(rc.url), rc.url);
+  const rp = DC.resolveFormat({ url: 'https://r1.googlevideo.com/v?n=XYZ' }, PL2);
+  ok('a plain url still gets its n transformed',
+    rp.ciphered === false && /n=NZYX/.test(rp.url), rp.url);
+  ok('without a player, ciphered formats resolve to nothing rather than a broken url',
+    DC.resolveFormat({ signatureCipher: 's=abc&url=https%3A%2F%2Fx' }, null) === null &&
+    DC.resolveFormat({ url: 'https://x/?n=1' }, null).url === 'https://x/?n=1');
+  ok('a reshaped player is reported as a named failure, not a crash',
+    (() => { try { DC.extractSig('var nothing=1;'); return false; }
+      catch (e) { return /could not locate the signature function/.test(e.message); } })());
+
   /* ---- provider framework: normalization, cache, pool, routing ---- */
   const TY = await import('../server/providers/types.mjs');
   const CA = await import('../server/cache.mjs');
@@ -729,6 +781,20 @@ async function wire() {
   ok('an honestly empty search is still a successful search',
     lempty.status === 200 && JSON.parse(lempty.text).items.length === 0, 'http ' + lempty.status);
 
+  /* the whole ciphered path, end to end: youtube returns no url at all, the
+     player script is fetched and run, and streams come out playable */
+  const lciph = JSON.parse((await call('/~umbra/piped/streams/Ciphered123')).text);
+  ok('a video whose formats are all ciphered still produces playable streams',
+    lciph.videoStreams.length > 0 && lciph.audioStreams.length > 0 &&
+    lciph.videoStreams.every((f) => /[?&]sig=cedfba/.test(f.url)),
+    'v=' + lciph.videoStreams.length + ' a=' + lciph.audioStreams.length + ' ' +
+    (lciph.videoStreams[0] || {}).url);
+  ok('the ciphered extraction reports how many formats it unscrambled',
+    lciph.umbraCiphered > 0 && lciph.umbraUnresolved === 0 && !lciph.umbraPlayerError,
+    'ciphered=' + lciph.umbraCiphered + ' unresolved=' + lciph.umbraUnresolved);
+  ok('deciphered stream urls carry the transformed n, not the original',
+    lciph.videoStreams.every((f) => /[?&]n=NZYX/.test(f.url)), (lciph.videoStreams[0] || {}).url);
+
   const l404 = await call('/~umbra/piped/nope');
   ok('an unknown piped endpoint 404s rather than 500s', l404.status === 404, 'http ' + l404.status);
 
@@ -821,6 +887,17 @@ async function wire() {
     padmin.status === 200 && /Backends/.test(padmin.text) && /innertube/.test(padmin.text) &&
     /COOLDOWN|DEGRADED/.test(padmin.text) && /not wired as separate backends/.test(padmin.text),
     'http ' + padmin.status);
+
+  const adiag = await API('/diagnose/Ciphered123');
+  ok('the diagnose endpoint explains per client why streams did or did not work',
+    adiag.status === 200 && adiag.j.data.usable === true &&
+    adiag.j.data.clients.length > 1 && adiag.j.data.clients.some((c) => c.ciphered > 0) &&
+    /deciphered locally/.test(adiag.j.data.diagnosis),
+    adiag.j.data.diagnosis);
+  ok('diagnose reports the player script it loaded and which functions it found',
+    adiag.j.data.player.loaded === true && adiag.j.data.player.sigName === 'zx' &&
+    adiag.j.data.player.nsigName === 'ndx',
+    JSON.stringify(adiag.j.data.player.sigName) + '/' + JSON.stringify(adiag.j.data.player.nsigName));
 
   const acache = await API('/cache');
   ok('the cache exposes its own statistics',
