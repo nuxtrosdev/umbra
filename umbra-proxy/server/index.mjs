@@ -31,7 +31,9 @@ import {
 import { portalDoc, labIndexDoc, helpDoc, statsDoc, DOC_CSS } from './docs.mjs';
 import * as piped from './piped.mjs';
 import * as pipedLocal from './piped-local.mjs';
-import { TUBE_CSS, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
+import * as ytApi from './api-youtube.mjs';
+import * as pm from './provider-manager.mjs';
+import { TUBE_CSS, ADMIN_CSS, providersDoc, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUB = path.join(HERE, '..', 'public');
@@ -39,6 +41,10 @@ const PUB = path.join(HERE, '..', 'public');
    as a public Piped API. Off by default: it is outbound extraction on your
    address for anyone who can reach this origin. */
 const PIPED_PUBLIC = /^(1|true|yes)$/i.test(String(process.env.UMBRA_PIPED_PUBLIC || ''));
+/* Serve /api/youtube to callers without an Umbra session. Off by default for
+   the same reason as the Piped door: it spends our egress on the caller's
+   behalf. */
+const API_PUBLIC = /^(1|true|yes)$/i.test(String(process.env.UMBRA_API_PUBLIC || ''));
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.UMBRA_HOST || '0.0.0.0';
 const DOC_HOPS = 6;
@@ -1040,6 +1046,30 @@ async function route(req, res) {
   const p = decodeURIComponent(u.pathname);
   const origin = originOf(req);
 
+  /* ---- the unified YouTube metadata API -------------------------------
+     Lives at a plain /api/youtube path rather than under the wire prefix
+     because it is an ordinary JSON API for the frontend, not a proxied
+     resource. The browser only ever talks to this origin; every upstream
+     request to Invidious, Piped and the rest is made by the server, so an
+     instance blocked on the user's network is still reachable for us.
+
+     Metadata only. No media bytes pass through here. */
+  if (p === '/api/youtube' || p.startsWith('/api/youtube/')) {
+    if (!API_PUBLIC && !session(readSession(req))) {
+      return json(res, {
+        ok: false,
+        error: { code: 'NO_SESSION', message: 'This API is session-only.' },
+        meta: { hint: 'GET /~umbra/boot first, or set UMBRA_API_PUBLIC=1' },
+      }, 401);
+    }
+    const { status, body } = await ytApi.handle(
+      p.slice('/api/youtube'.length), u.searchParams, { method: req.method });
+    return json(res, body, status, metaHeaders({
+      kind: 'youtube-api',
+      provider: (body.meta && body.meta.provider) || null,
+    }));
+  }
+
   if (!p.startsWith(PFX)) {
     if (STATIC[p] && req.method === 'GET') return serveStatic(res, p);
     return notFound(res, p);
@@ -1302,6 +1332,19 @@ async function route(req, res) {
   /* ---- piped instance health, for the stats surface ---- */
   if (head === 'tube.health') {
     return json(res, { instances: piped.instanceHealth() });
+  }
+
+  /* ---- provider diagnostics, rendered for humans ----
+     The same data as /api/youtube/providers/health, laid out as a table so
+     "which backend is answering and why" is one page rather than a jq
+     incantation. */
+  if (head === 'providers') {
+    const ctx = mkCtx('https://providers.umbra/', 'd', u.searchParams.get('t'));
+    return send(res, 200, {
+      'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+      ...metaHeaders({ kind: 'umbra-providers' }),
+    }, localDoc(ctx, providersDoc(pm.health(), ytApi.ENDPOINTS), ctx.url,
+      '<style>' + DOC_CSS + TUBE_CSS + ADMIN_CSS + '</style>', 'umbra://providers/'));
   }
 
   /* ---- capsule docs ---- */

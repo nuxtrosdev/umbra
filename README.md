@@ -92,6 +92,78 @@ Parsing is done by searching the response for renderer types wherever they
 appear, rather than walking fixed paths, so YouTube reshuffling its response
 tree does not break it.
 
+## Multi-backend YouTube metadata
+
+`/api/youtube/*` is one normalized API over several independent YouTube
+backends. The browser only ever talks to this origin — every upstream request
+is made by the server, so an instance your network blocks is still reachable
+for us, and failover happens entirely behind the boundary.
+
+```
+GET  /api/youtube/search?q=&aggregate=0|1&limit=&region=
+GET  /api/youtube/trending?region=
+GET  /api/youtube/video/:id
+GET  /api/youtube/channel/:id
+GET  /api/youtube/playlist/:id
+GET  /api/youtube/comments/:id
+GET  /api/youtube/recommendations/:id
+GET  /api/youtube/streams/:id
+GET  /api/youtube/providers
+GET  /api/youtube/providers/health?probe=0|1
+GET  /api/youtube/providers/survey
+POST /api/youtube/providers/refresh/invidious
+GET  /api/youtube/cache
+POST /api/youtube/cache/clear
+```
+
+Every response is `{ ok, data, meta }`. `meta` names the provider and instance
+that answered and lists what was tried first. Session-gated like the rest of
+Umbra unless `UMBRA_API_PUBLIC=1`.
+
+`umbra://providers/` renders the same data as a table: routing order, instance
+status, latency, cooldowns, recent decisions and cache hit rate.
+
+### Backends
+
+| Provider | Engine | Default |
+| --- | --- | --- |
+| `innertube` | Umbra's own InnerTube extraction | on |
+| `piped` | NewPipeExtractor, via the Piped instance pool | on |
+| `invidious` | Invidious, multi-instance | on |
+| `poketube` | InnerTube, someone else's deployment | needs `UMBRA_POKETUBE_INSTANCES` |
+| `newpipe` | self-hosted NewPipeExtractor bridge | needs `UMBRA_NEWPIPE_URL` |
+| `youtubejs` | YouTube.js — adds signature deciphering | needs `npm i youtubei.js` |
+| `ytdlp` | yt-dlp subprocess, metadata only | needs `yt-dlp` on PATH |
+
+Two layers of failover sit under this and do different jobs. An **instance
+pool** moves between hosts of one provider when a particular Invidious server
+is down. The **manager** moves between providers when a whole fleet is being
+squeezed. That separation is what makes "YouTube broke one parser" survivable:
+`innertube`, `piped`/`newpipe` and `youtubejs` are genuinely different parsers,
+and `invidious` extracts from an address that isn't ours.
+
+Instances are scored on reliability, latency and recent success, and a failing
+one is benched with exponential backoff rather than retried. Scoring only ever
+*demotes* — an untested provider is never promoted above the configured order,
+because looking perfect on no evidence is not the same as being good.
+
+Search can optionally fan out (`aggregate=1`), merging by **video id** and
+ranking by how many backends agreed. Everything else tries one provider and
+falls through only on failure, because asking three backends for the same video
+record costs three requests and returns one answer.
+
+### Projects deliberately not wired up
+
+CloudTube, ViewTube, FreeTube, LibreTube, Yattee, Clipious, TubiTui, ytfzf,
+youtube-viewer, pipe-viewer, PlasmaTube and Pipeline are **clients**, not
+extraction backends — they consume Invidious, Piped or YouTube.js, all of which
+are already in the pool. Adding them would add hops, not independence. The
+reasoning per project is served from `/api/youtube/providers/survey` and shown
+on the diagnostics page.
+
+Metadata only. No video bytes pass through this API; `/streams/:id` returns
+format metadata, and what a caller does with those URLs is its own decision.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -106,6 +178,18 @@ tree does not break it.
 | `UMBRA_YT_VISITOR_TTL` | `21600000` | Visitor identity cache lifetime, ms. |
 | `UMBRA_YT_EMBED_URL` | `https://www.reddit.com/` | Referring origin presented for embedded playback. |
 | `UMBRA_YT_BASE` | — | Override the YouTube origin. Used by the test suite to point at a mock. |
+| `UMBRA_API_PUBLIC` | off | Serve `/api/youtube/*` to callers with no Umbra session. |
+| `UMBRA_PROVIDERS` | `innertube,piped,invidious,poketube,newpipe,youtubejs,ytdlp` | Provider order and membership. |
+| `UMBRA_INVIDIOUS_INSTANCES` | built-in seed list | Invidious instance pool. |
+| `UMBRA_INVIDIOUS_DIRECTORY` | `https://api.invidious.io/instances.json` | Where `providers/refresh/invidious` discovers instances. |
+| `UMBRA_POKETUBE_INSTANCES` | — | Enables the PokeTube provider. |
+| `UMBRA_NEWPIPE_URL` | — | Enables the NewPipeExtractor bridge provider. |
+| `UMBRA_YTDLP_BIN` | `yt-dlp` | yt-dlp binary to probe for. |
+| `UMBRA_PROVIDER_TIMEOUT` | `8000` | Per-instance request timeout, ms. |
+| `UMBRA_PROVIDER_FAIL_LIMIT` | `3` | Consecutive failures before an instance is benched. |
+| `UMBRA_PROVIDER_COOLDOWN` | `120000` | Base cooldown, ms. Doubles per consecutive bench. |
+| `UMBRA_PROVIDER_MAX_ATTEMPTS` | `3` | Instances tried per call, per provider. |
+| `UMBRA_CACHE_MAX` | `500` | Metadata cache entries. |
 
 ## Tests
 

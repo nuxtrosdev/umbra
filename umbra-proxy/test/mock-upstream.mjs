@@ -301,6 +301,80 @@ const server = http.createServer((req, res) => {
     }
     return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({ cookies: jar }));
   }
+  /* ---- mock Invidious API instance --------------------------------------
+     The real /api/v1 shapes, so the invidious adapter is exercised against a
+     payload it would actually meet. Titles differ from the Piped mock's on
+     purpose: the aggregation tests need to tell the two sources apart while
+     still agreeing on the video id. */
+  if (p.startsWith('/api/v1/')) {
+    const rest = p.slice(8);
+    HITS.push({ path: '/api/v1', method: req.method, rest, q: u.searchParams.get('q') });
+    const J = (o) => send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(o));
+    const thumbs = [
+      { quality: 'medium', url: `${base}/thumb.jpg`, width: 320, height: 180 },
+      { quality: 'maxres', url: `${base}/thumb.jpg`, width: 1280, height: 720 },
+    ];
+    const item = (id, title) => ({
+      type: 'video', title, videoId: id, author: 'Mock Inv Channel', authorId: 'UCinvmock',
+      authorUrl: '/channel/UCinvmock', authorVerified: true, videoThumbnails: thumbs,
+      description: 'inv description', viewCount: 4242, published: 1767225600,
+      publishedText: '3 weeks ago', lengthSeconds: 212, liveNow: false,
+    });
+    if (rest === 'stats') return J({ version: '2.x', software: { name: 'invidious' } });
+    if (rest === 'search') {
+      if (u.searchParams.get('q') === '__invdown__') return send(res, 503, { 'content-type': 'text/plain' }, 'nope');
+      return J([
+        item(VID, 'Invidious Search Hit'),
+        item('aaaaaaaaaaa', 'Invidious Only Hit'),
+        { type: 'channel', authorId: 'UCx', author: 'not a video' },
+      ]);
+    }
+    if (rest === 'trending') return J([item(VID, 'Invidious Trending Hit')]);
+    if (rest.startsWith('videos/')) {
+      return J({
+        ...item(rest.slice(7), 'Invidious Video Title'),
+        likeCount: 99, subCountText: '1.2M',
+        adaptiveFormats: [
+          { url: `${base}/v137.mp4`, itag: '137', type: 'video/mp4; codecs="avc1"', qualityLabel: '1080p',
+            bitrate: '2000000', fps: 30, clen: String(CLIP.length) },
+          { url: `${base}/a140.m4a`, itag: '140', type: 'audio/mp4; codecs="mp4a"', audioQuality: 'AUDIO_QUALITY_MEDIUM',
+            bitrate: '128000', clen: String(CLIP.length) },
+        ],
+        formatStreams: [
+          { url: `${base}/v18.mp4`, itag: '18', type: 'video/mp4', quality: 'medium',
+            qualityLabel: '360p', bitrate: '500000', container: 'mp4' },
+        ],
+        captions: [{ label: 'English', language_code: 'en', url: '/api/v1/captions/' + rest.slice(7) + '?label=English' }],
+        recommendedVideos: [item('bbbbbbbbbbb', 'Invidious Related')],
+      });
+    }
+    if (rest.startsWith('channels/')) {
+      return J({
+        authorId: rest.slice(9), author: 'Invidious Channel', description: 'inv channel desc',
+        authorThumbnails: thumbs, authorBanners: thumbs, subCount: 1200000, authorVerified: true,
+        latestVideos: [item(VID, 'Invidious Channel Upload')],
+      });
+    }
+    if (rest.startsWith('playlists/')) {
+      return J({
+        playlistId: rest.slice(10), title: 'Invidious Playlist', author: 'Inv Author', authorId: 'UCinvmock',
+        description: 'inv playlist', videoCount: 1, playlistThumbnail: `${base}/thumb.jpg`,
+        videos: [item(VID, 'Invidious Playlist Item')],
+      });
+    }
+    if (rest.startsWith('comments/')) {
+      return J({
+        commentCount: 1, videoId: rest.slice(9),
+        comments: [{
+          author: 'Inv Commenter', authorId: 'UCinvc', authorThumbnail: `${base}/thumb.jpg`,
+          content: 'an invidious comment', published: 1767225600, publishedText: '2 hours ago',
+          likeCount: 12, commentId: 'ic1', isPinned: false,
+        }],
+      });
+    }
+    return send(res, 404, { 'content-type': 'application/json' }, JSON.stringify({ error: 'no such invidious route' }));
+  }
+
   /* ---- mock Piped API instance ------------------------------------------
      Same shapes the real /streams, /search, /trending, /channel and /comments
      endpoints return, pointed at this mock's own media so the Umbra media

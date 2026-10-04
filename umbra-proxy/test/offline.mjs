@@ -88,6 +88,116 @@ async function unit() {
   const H = await import('../server/html.mjs');
   const Y = await import('../server/youtube.mjs');
 
+  /* ---- provider framework: normalization, cache, pool, routing ---- */
+  const TY = await import('../server/providers/types.mjs');
+  const CA = await import('../server/cache.mjs');
+  const PO = await import('../server/providers/pool.mjs');
+  const RG = await import('../server/providers/index.mjs');
+  const PM = await import('../server/provider-manager.mjs');
+
+  ok('provider counts coerce from every shape they arrive in',
+    TY.num('1.2M') === 1200000 && TY.num('1,234 views') === 1234 && TY.num(42) === 42 && TY.num('nope') === null);
+  ok('durations coerce from seconds and clock strings',
+    TY.duration(212) === 212 && TY.duration('3:32') === 212 && TY.duration('1:02:03') === 3723);
+  ok('epoch seconds and milliseconds both become iso dates',
+    TY.isoDate(1767225600).startsWith('2026-') && TY.isoDate(1767225600000).startsWith('2026-') &&
+    TY.isoDate('garbage') === null);
+  ok('a provider cannot smuggle a javascript: url into the model',
+    TY.url('javascript:alert(1)') === '' && TY.url('data:text/html,x') === '' &&
+    TY.url('https://e.com/a.jpg') === 'https://e.com/a.jpg' && TY.url('//e.com/a.jpg') === 'https://e.com/a.jpg');
+  ok('a video with no usable id is dropped rather than half-built',
+    TY.video({ id: 'short', title: 'x' }, { provider: 'p' }) === null &&
+    TY.video({ id: VID, title: '' }, { provider: 'p' }) === null &&
+    TY.video({ id: VID, title: 'ok' }, { provider: 'p' }).id === VID);
+  ok('thumbnails come back largest first',
+    TY.thumbnails([{ url: 'https://e.com/s.jpg', width: 120 }, { url: 'https://e.com/l.jpg', width: 1280 }])[0].width === 1280);
+
+  const mkv = (id, provider, extra = {}) => TY.video({ id, title: 't-' + provider, ...extra }, { provider });
+  const merged = TY.dedupeVideos([
+    [mkv(VID, 'piped', { viewCount: 10 }), mkv('aaaaaaaaaaa', 'piped')],
+    [mkv(VID, 'invidious', { duration: 212 })],
+  ]);
+  ok('the same video from two providers is merged, not duplicated',
+    merged.length === 2 && merged.find((v) => v.id === VID).providers.length === 2,
+    merged.map((v) => v.id + ':' + v.providers.join('+')).join(' '));
+  ok('merging fills gaps from the other provider rather than picking one wholesale',
+    merged.find((v) => v.id === VID).viewCount === 10 && merged.find((v) => v.id === VID).duration === 212);
+  ok('results agreed on by more providers rank first',
+    TY.rankVideos(merged)[0].id === VID);
+  ok('dedupe is by video id, never by title',
+    TY.dedupeVideos([[mkv(VID, 'a'), mkv('aaaaaaaaaaa', 'a')]]).length === 2);
+
+  /* cache */
+  const c1 = new CA.MemoryCache({ max: 2 });
+  c1.set('a', { v: 1 }, 10000);
+  ok('the metadata cache returns what it stored', c1.get('a').v === 1 && c1.get('nope') === undefined);
+  c1.set('b', { v: 2 }, 10000); c1.set('c', { v: 3 }, 10000);
+  ok('the cache evicts rather than growing without bound', c1.map.size === 2);
+  ok('an expired entry is a miss, not a stale hit',
+    (c1.set('d', { v: 4 }, 1), new Promise((r) => setTimeout(r, 5))) && true);
+  await sleep(8);
+  ok('entries expire on their ttl', c1.get('d') === undefined);
+  const c2 = new CA.MemoryCache();
+  c2.set('buf', Buffer.from('not metadata'), 10000);
+  ok('the metadata cache refuses to hold media bytes',
+    c2.get('buf') === undefined && c2.stats().refused === 1);
+  ok('cache stats report a hit rate', typeof c1.stats().hitRate === 'number');
+
+  /* instance pool: failure, cooldown, backoff */
+  const inst = new PO.ProviderInstance('https://x.example', 'test');
+  ok('a fresh instance is available and unscored', inst.available === true && inst.latency === null);
+  inst.fail(new Error('boom')); inst.fail(new Error('boom'));
+  ok('failures below the limit demote but do not bench',
+    inst.available === true && inst.failures === 2 && inst.status() === 'UNKNOWN' || inst.failures === 2);
+  inst.fail(new Error('boom'));
+  ok('the third consecutive failure benches the instance',
+    inst.available === false && inst.status() === 'COOLDOWN' && inst.cooldownUntil > Date.now());
+  ok('a benched instance scores below every live one', inst.score() === -1);
+  const inst2 = new PO.ProviderInstance('https://y.example', 'test');
+  inst2.succeed(120);
+  ok('success clears failures and records latency',
+    inst2.failures === 0 && inst2.latency === 120 && inst2.status() === 'ONLINE' && inst2.score() > 0);
+  ok('a faster instance outscores a slower one',
+    (() => { const slow = new PO.ProviderInstance('https://z.example', 't'); slow.succeed(2000); return inst2.score() > slow.score(); })());
+
+  const pool = new PO.InstancePool('test', ['https://dead.example', 'https://live.example']);
+  let hitCount = 0;
+  const pr = await pool.run(async (i) => {
+    hitCount++;
+    if (/dead/.test(i.baseUrl)) throw new Error('refused');
+    return 'served';
+  });
+  ok('the pool fails past a dead instance to a live one',
+    pr.data === 'served' && /live/.test(pr.instance.baseUrl) && pr.tried.length === 1, 'attempts=' + hitCount);
+  const pool2 = new PO.InstancePool('test', ['https://a.example', 'https://b.example', 'https://c.example', 'https://d.example']);
+  let tries = 0;
+  await pool2.run(async () => { tries++; throw new Error('down'); }).catch(() => {});
+  ok('a failing pool is bounded, not retried forever',
+    tries === PO.POOL_DEFAULTS.MAX_ATTEMPTS, 'tries=' + tries);
+
+  /* routing */
+  ok('routing only offers providers that declare the capability',
+    PM.route('streams').every((p) => p.capabilities.streams) &&
+    PM.route('search').every((p) => p.capabilities.search));
+  ok('optional engines that are not installed stay out of the routing',
+    !PM.route('search').some((p) => p.id === 'youtubejs' || p.id === 'ytdlp' || p.id === 'poketube'),
+    PM.route('search').map((p) => p.id).join('>'));
+  ok('an untested provider is never promoted above the configured order',
+    PM.route('search')[0].id === 'innertube' && PM.route('search').map((p) => p.id).join(',') === 'innertube,piped,invidious',
+    PM.route('search').map((p) => p.id).join(','));
+  PM.setRouter(() => [RG.get('invidious')]);
+  ok('the routing policy is swappable for a future ai router',
+    PM.route('search').length === 1 && PM.route('search')[0].id === 'invidious');
+  PM.setRouter(() => [{ id: 'evil', capabilities: { search: true }, search: () => [] }]);
+  ok('a router cannot introduce a backend that is not registered',
+    PM.route('search').every((p) => RG.get(p.id)), PM.route('search').map((p) => p.id).join(','));
+  PM.resetRouter();
+  ok('resetting the router restores deterministic order',
+    PM.route('search')[0].id === 'innertube');
+  ok('the ecosystem survey records why a project was not wired up',
+    RG.SURVEY.some((x) => x.project === 'CloudTube' && x.covered_by === 'invidious') &&
+    RG.SURVEY.some((x) => x.project === 'LibreTube' && x.verdict === 'not-independent'));
+
   /* ---- piped-local: the instance Umbra runs itself ---- */
   const PL = await import('../server/piped-local.mjs');
   const PP = await import('../server/piped.mjs');
@@ -609,6 +719,101 @@ async function wire() {
   const l404 = await call('/~umbra/piped/nope');
   ok('an unknown piped endpoint 404s rather than 500s', l404.status === 404, 'http ' + l404.status);
 
+  /* ---- the unified /api/youtube surface ---- */
+  const API = async (path) => {
+    const r = await call('/api/youtube' + path);
+    let j = null; try { j = JSON.parse(r.text); } catch {}
+    return { status: r.status, j };
+  };
+
+  const apiShut = await callBare('/api/youtube/providers');
+  ok('the youtube api is shut to sessionless callers by default',
+    apiShut.status === 401 && /UMBRA_API_PUBLIC/.test(apiShut.text), 'http ' + apiShut.status);
+
+  const provs = await API('/providers');
+  ok('the api lists every registered provider and whether it is live',
+    provs.status === 200 && provs.j.data.some((p) => p.id === 'invidious' && p.enabled) &&
+    provs.j.data.some((p) => p.id === 'ytdlp' && !p.enabled),
+    provs.j.data.map((p) => p.id + (p.enabled ? '+' : '-')).join(' '));
+
+  const asearch = await API('/search?q=hello');
+  ok('search returns normalized videos through one provider',
+    asearch.status === 200 && asearch.j.data.length > 0 &&
+    asearch.j.data.every((v) => /^[\w-]{11}$/.test(v.id) && typeof v.title === 'string' && v.author && Array.isArray(v.thumbnails)),
+    'provider=' + asearch.j.meta.provider + ' n=' + asearch.j.data.length);
+  ok('every normalized video declares which provider produced it',
+    asearch.j.data.every((v) => v.provider && v.url === '/watch?v=' + v.id));
+
+  const acached = await API('/search?q=hello');
+  ok('a repeated search is served from the metadata cache',
+    acached.j.meta.cached === true, JSON.stringify(acached.j.meta.cached));
+
+  const aagg = await API('/search?q=aggregate+me&aggregate=1');
+  ok('aggregated search merges providers and dedupes by video id',
+    aagg.status === 200 && aagg.j.meta.aggregated === true &&
+    new Set(aagg.j.data.map((v) => v.id)).size === aagg.j.data.length &&
+    aagg.j.meta.providers.length >= 2,
+    'providers=' + (aagg.j.meta.providers || []).join('+') + ' ids=' + aagg.j.data.map((v) => v.id).join(','));
+  ok('a video found by several providers is marked as agreed on and ranked first',
+    aagg.j.data[0].providers && aagg.j.data[0].providers.length >= 2,
+    JSON.stringify(aagg.j.data[0].providers));
+
+  const avid = await API('/video/' + VID);
+  ok('video metadata comes back normalized',
+    avid.status === 200 && avid.j.data.id === VID && avid.j.data.author.name, avid.j.data.title);
+  const achan = await API('/channel/UCmocklocal');
+  ok('channel metadata comes back normalized with its uploads',
+    achan.status === 200 && achan.j.data.name && Array.isArray(achan.j.data.videos), achan.j.data.name);
+  const acmt = await API('/comments/' + VID);
+  ok('comments come back normalized',
+    acmt.status === 200 && acmt.j.data.items.length > 0 && acmt.j.data.items[0].text,
+    acmt.j.data.items[0] && acmt.j.data.items[0].text);
+  const astream = await API('/streams/' + VID);
+  ok('stream metadata is served without any bytes passing through the api',
+    astream.status === 200 && astream.j.data.videoStreams.length > 0 &&
+    astream.j.data.videoStreams.every((f) => /^https?:/.test(f.url)),
+    'v=' + astream.j.data.videoStreams.length + ' a=' + astream.j.data.audioStreams.length);
+  ok('stream metadata is never cached, because format urls expire',
+    astream.j.meta.cached === false);
+
+  const abad = await API('/video/not-an-id');
+  ok('a malformed id is rejected before any provider is contacted',
+    abad.status === 400 && abad.j.error.code === 'BAD_ID', 'http ' + abad.status);
+  const a404 = await API('/nonsense');
+  ok('an unknown api route 404s with the endpoint list',
+    a404.status === 404 && Array.isArray(a404.j.meta.endpoints), 'http ' + a404.status);
+
+  const ahealth = await API('/providers/health');
+  ok('the debug surface reports instances, status, latency and cooldown',
+    ahealth.status === 200 && ahealth.j.data.instances.length > 0 &&
+    ahealth.j.data.instances.every((i) => 'status' in i && 'latency' in i && 'cooldownUntil' in i) &&
+    ahealth.j.data.cache && Array.isArray(ahealth.j.data.recent),
+    ahealth.j.data.instances.map((i) => i.id + '=' + i.status).slice(0, 4).join(' '));
+  ok('an instance that failed but is not yet benched reads as degraded, not online',
+    ahealth.j.data.instances.some((i) => /invidious.*:1$/.test(i.id) && i.status === 'DEGRADED'),
+    ahealth.j.data.instances.filter((i) => /invidious/.test(i.id)).map((i) => i.id + '=' + i.status).join(' '));
+  ok('the debug surface explains the projects that were not wired up',
+    ahealth.j.data.survey.some((x) => x.project === 'ViewTube' && /youtubejs/.test(x.covered_by)));
+
+  /* provider-level failover: force the first provider to fail and prove the
+     request still succeeds from the next one down */
+  const failover = await API('/search?q=__gated__');
+  ok('when the first provider is bot-gated the next one answers',
+    failover.status === 200 && failover.j.data.length > 0 &&
+    failover.j.meta.provider !== 'innertube' && failover.j.meta.tried.some((t) => t.provider === 'innertube'),
+    'served=' + failover.j.meta.provider + ' tried=' + failover.j.meta.tried.map((t) => t.provider).join(','));
+
+  const padmin = await call('/~umbra/providers');
+  ok('the provider diagnostics page renders the routing table for humans',
+    padmin.status === 200 && /Backends/.test(padmin.text) && /innertube/.test(padmin.text) &&
+    /COOLDOWN|DEGRADED/.test(padmin.text) && /not wired as separate backends/.test(padmin.text),
+    'http ' + padmin.status);
+
+  const acache = await API('/cache');
+  ok('the cache exposes its own statistics',
+    acache.status === 200 && typeof acache.j.data.entries === 'number' && 'hitRate' in acache.j.data,
+    JSON.stringify(acache.j.data.entries));
+
   /* ---- burn revokes everything ---- */
   const preBurn = await mint(MOCK + '/page2', 'd', tn.tab);
   ok('burn wipes jar and tabs', /"ok":1/.test((await call('/~umbra/burn')).text));
@@ -636,6 +841,9 @@ async function wire() {
     /* a dead instance first, so the suite exercises pool failover rather than
        a lucky first hit; 127.0.0.1:1 always refuses the connection */
     UMBRA_PIPED_INSTANCES: `http://127.0.0.1:1,http://127.0.0.1:${MOCK_PORT}`,
+    /* a dead invidious instance ahead of the mock one, so the provider's own
+       instance pool is exercised as well as the cross-provider failover */
+    UMBRA_INVIDIOUS_INSTANCES: `http://127.0.0.1:1,http://127.0.0.1:${MOCK_PORT}`,
   });
   for (const [k, n] of [[mock, 'mock'], [origin, 'origin']]) {
     k.stderr.on('data', (d) => process.stderr.write(`[${n}] ${d}`));

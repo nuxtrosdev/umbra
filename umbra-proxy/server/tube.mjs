@@ -168,3 +168,106 @@ export function errorDoc(what, e, tried) {
   <pre>${esc((tried || []).map((t) => t.instance + '  —  ' + t.note).join('\n') || String(e && e.message || e))}</pre>
   </main>`;
 }
+
+/* ------------------------------------------------------- provider admin */
+
+const STATUS_COLOR = {
+  ONLINE: '#7ee787', DEGRADED: '#ffd9a8', COOLDOWN: '#ff9f9f',
+  DISABLED: '#7d8da3', UNKNOWN: '#bfeaff',
+};
+
+/**
+ * The diagnostic table. Everything the router knows, in the order it would
+ * pick: which provider answers first, which instances are benched and why,
+ * and what the last failure actually said.
+ */
+export function providersDoc(h, endpoints = []) {
+  const dot = (s) => `<span style="color:${STATUS_COLOR[s] || '#bfeaff'}">●</span>`;
+  const ms = (n) => (n === null || n === undefined ? '—' : n + 'ms');
+  const when = (t) => (t ? esc(String(t).replace('T', ' ').slice(0, 19)) : '—');
+
+  const provRows = h.providers.map((p) => `<tr>
+    <td><b>${esc(p.name || p.id)}</b><br><span class="vsub">${esc(p.id)}</span></td>
+    <td>${p.enabled ? (p.routed ? '<span class="chip">ROUTED</span>' : '<span class="chip warn">IDLE</span>')
+      : '<span class="chip warn">DISABLED</span>'}</td>
+    <td>${p.instances}</td>
+    <td>${esc(p.capabilities.join(' '))}</td>
+  </tr>`).join('');
+
+  const instRows = h.instances.map((i) => `<tr>
+    <td>${dot(i.status)} ${esc(i.id)}</td>
+    <td style="color:${STATUS_COLOR[i.status] || '#bfeaff'}">${esc(i.status)}</td>
+    <td>${esc(ms(i.latency))}</td>
+    <td>${i.failures || 0}</td>
+    <td>${i.successRate === undefined ? '—' : esc(String(i.successRate))}</td>
+    <td>${when(i.lastSuccess)}</td>
+    <td>${i.cooldownUntil ? when(i.cooldownUntil) : '—'}</td>
+    <td class="vsub">${esc(i.lastError || '')}</td>
+  </tr>`).join('');
+
+  const logRows = (h.recent || []).slice().reverse().slice(0, 25).map((e) => `<tr>
+    <td class="vsub">${when(e.at)}</td>
+    <td>${e.ok ? '<span style="color:#7ee787">ok</span>' : '<span style="color:#ff9f9f">fail</span>'}</td>
+    <td>${esc(e.provider || '')}${e.instance && e.instance !== e.provider ? ' <span class="vsub">' + esc(e.instance) + '</span>' : ''}</td>
+    <td>${esc(e.capability || '')}</td>
+    <td>${esc(ms(e.ms))}</td>
+    <td class="vsub">${esc(e.error || '')}</td>
+  </tr>`).join('');
+
+  const surveyRows = (h.survey || []).map((x) => `<tr>
+    <td><b>${esc(x.project)}</b></td>
+    <td><span class="chip warn">${esc(x.verdict)}</span></td>
+    <td>${esc(x.reason)}</td>
+    <td class="vsub">${esc(x.covered_by || '')}</td>
+  </tr>`).join('');
+
+  const c = h.cache || {};
+  return `<main style="max-width:1100px">
+  <header>
+    <span class="kicker">umbra · provider diagnostics</span>
+    <h1>Backends</h1>
+    <p class="muted">Every YouTube backend Umbra can reach, and what the router currently thinks of each.
+    Providers are tried top to bottom; an instance that fails enough times is benched rather than retried,
+    and a provider whose instances are all benched sinks below the ones that still answer.</p>
+  </header>
+
+  <h2>Providers</h2>
+  <table class="ptab"><thead><tr><th>Provider</th><th>Routing</th><th>Instances</th><th>Capabilities</th></tr></thead>
+  <tbody>${provRows}</tbody></table>
+
+  <h2>Instances</h2>
+  <table class="ptab"><thead><tr><th>Instance</th><th>Status</th><th>Latency</th><th>Fails</th>
+  <th>Success</th><th>Last success</th><th>Cooldown until</th><th>Last error</th></tr></thead>
+  <tbody>${instRows}</tbody></table>
+
+  <h2>Metadata cache</h2>
+  <div class="tbar">
+    <span class="chip">${esc(String(c.entries ?? 0))} / ${esc(String(c.max ?? 0))} entries</span>
+    <span class="chip">${esc(String(Math.round((c.approxBytes || 0) / 1024)))} KB</span>
+    <span class="chip">hit rate ${c.hitRate === null || c.hitRate === undefined ? '—' : esc(String(c.hitRate))}</span>
+    <span class="chip">${esc(String(c.hits ?? 0))} hits · ${esc(String(c.misses ?? 0))} misses</span>
+    ${c.refused ? `<span class="chip warn">${esc(String(c.refused))} refused (not metadata)</span>` : ''}
+  </div>
+
+  <h2>Recent decisions</h2>
+  <table class="ptab"><thead><tr><th>When</th><th></th><th>Provider</th><th>Capability</th><th>Took</th><th>Error</th></tr></thead>
+  <tbody>${logRows || '<tr><td colspan="6" class="vsub">nothing yet</td></tr>'}</tbody></table>
+
+  <h2>Projects not wired as separate backends</h2>
+  <p class="muted">Several well-known front ends consume another backend rather than extracting themselves.
+  Adding them would add hops, not independence, so they are recorded here instead.</p>
+  <table class="ptab"><thead><tr><th>Project</th><th>Verdict</th><th>Why</th><th>Already covered by</th></tr></thead>
+  <tbody>${surveyRows}</tbody></table>
+
+  <h2>API</h2>
+  <pre>${esc(endpoints.join('\n'))}</pre>
+  </main>`;
+}
+
+export const ADMIN_CSS = `
+table.ptab{width:100%;border-collapse:collapse;margin:8px 0 18px;font-size:12.5px}
+table.ptab th{text-align:left;font:10px/1.6 ui-monospace,Menlo,monospace;letter-spacing:.1em;
+ text-transform:uppercase;color:#8b9bb4;border-bottom:1px solid rgba(255,255,255,.12);padding:6px 10px 6px 0}
+table.ptab td{padding:7px 10px 7px 0;border-bottom:1px solid rgba(255,255,255,.05);vertical-align:top;color:#cfdaea}
+table.ptab tr:hover td{background:rgba(255,255,255,.025)}
+`;
