@@ -476,6 +476,11 @@ const server = http.createServer((req, res) => {
     /* One id exercises the watch page as an extraction surface. Without a
        consent cookie the real site serves a wall instead of the page, and an
        extractor that does not send one reads that as a block. */
+    if (u.searchParams.get('v') === 'EmbedOnly12') {
+      /* the exact shape the user hit: watch refused, embed still answering */
+      return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },
+        '<!doctype html><html><body><div>LOGIN_REQUIRED: Sign in to confirm you\u2019re not a bot</div></body></html>');
+    }
     if (u.searchParams.get('v') === 'PageOnly123') {
       if (!/SOCS=|CONSENT=/.test(req.headers.cookie || '')) {
         return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },

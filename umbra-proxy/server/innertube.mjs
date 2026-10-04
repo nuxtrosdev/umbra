@@ -41,7 +41,10 @@
  */
 import { upstream, readBody } from './net.mjs';
 
-const YT_BASE = (process.env.UMBRA_YT_BASE || 'https://www.youtube.com').replace(/\/$/, '');
+/* Read at call time, not at import time. A constant captured on first import
+   cannot be redirected afterwards, which made the module untestable against a
+   local upstream and silently sent test traffic to the real youtube.com. */
+const ytBase = () => (process.env.UMBRA_YT_BASE || 'https://www.youtube.com').replace(/\/$/, '');
 
 /* An embedded player identifies the page hosting it. It must NOT be a YouTube
    URL: the whole premise of the embedded clients is that an external site is
@@ -308,12 +311,12 @@ export async function getVisitorData({ cookie = '', embedHtml = '', force = fals
   if (!force && visitorCache.value && now - visitorCache.at < VISITOR_TTL) return visitorCache;
 
   try {
-    const res = await upstream(YT_BASE + '/sw.js_data', {
+    const res = await upstream(ytBase() + '/sw.js_data', {
       headers: {
         accept: '*/*',
         'accept-language': 'en-US,en;q=0.9',
-        referer: YT_BASE + '/',
-        origin: YT_BASE,
+        referer: ytBase() + '/',
+        origin: ytBase(),
         cookie,
       },
     });
@@ -383,8 +386,8 @@ export function buildHeaders(key, { visitorData = '', videoId = '', cookie = '' 
     'user-agent': c.ua,
     'x-youtube-client-name': String(c.id),
     'x-youtube-client-version': c.version,
-    origin: YT_BASE,
-    referer: c.embedded && videoId ? YT_BASE + '/embed/' + videoId : YT_BASE + '/',
+    origin: ytBase(),
+    referer: c.embedded && videoId ? ytBase() + '/embed/' + videoId : ytBase() + '/',
   };
   if (visitorData) h['x-goog-visitor-id'] = visitorData;
   if (cookie) h.cookie = cookie;
@@ -439,7 +442,7 @@ export function rewriteInnertubeBody(buf, { client = LADDER[0], visitorData = ''
  * the embed document would have sent.
  */
 export async function innertubeRequest(endpoint, payload, key, { visitorData = '', cookie = '', apiKey = '', videoId = '' } = {}) {
-  const url = YT_BASE + '/youtubei/v1/' + endpoint + '?prettyPrint=false' +
+  const url = ytBase() + '/youtubei/v1/' + endpoint + '?prettyPrint=false' +
     (apiKey ? '&key=' + encodeURIComponent(apiKey) : '');
   const body = JSON.stringify({
     context: buildContext(key, { visitorData }),
@@ -483,4 +486,6 @@ export async function playerRequest(videoId, key, { visitorData = '', cookie = '
   return innertubeRequest('player', payload, key, { visitorData, cookie: jar, apiKey, videoId });
 }
 
-export { YT_BASE, EMBED_HOST };
+export { ytBase, EMBED_HOST };
+/* compatibility: some callers read the value, not the getter */
+export const YT_BASE = ytBase();

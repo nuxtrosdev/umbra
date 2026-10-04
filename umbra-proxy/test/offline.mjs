@@ -1087,6 +1087,18 @@ async function wire() {
     wpWatch.length > 0 && /SOCS=|CONSENT=/.test(wpWatch[wpWatch.length - 1].cookie || ''),
     String(wpWatch.length && wpWatch[wpWatch.length - 1].cookie).slice(0, 40));
 
+  /* The reported failure, reproduced: the watch page is bot-walled but the
+     embed page still answers with a ytcfg. Giving up there threw away the
+     one surface YouTube was still talking to us on. */
+  const wpEmbed = await WPP.getStreams('EmbedOnly12');
+  ok('a bot-walled watch page falls through to the embed page config',
+    (wpEmbed.data.videoStreams.length + wpEmbed.data.audioStreams.length) > 0,
+    wpEmbed.data.videoStreams.length + 'v/' + wpEmbed.data.audioStreams.length + 'a');
+  const WPcore = await import('../server/watchpage.mjs');
+  ok('ytcfg is read from a call argument, which the assignment patterns miss',
+    WPcore.extractCallArg('<script>ytcfg.set({"INNERTUBE_API_KEY":"K","VISITOR_DATA":"V"});</script>',
+      'ytcfg.set(').INNERTUBE_API_KEY === 'K');
+
   const wpChan = await WPP.getChannel('UC' + 'x'.repeat(22));
   ok('a channel feed gives uploads with no api key and no quota',
     wpChan.data.videos.length === 2 && wpChan.data.videos[0].id === 'FeedVideo01' &&

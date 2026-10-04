@@ -29,6 +29,7 @@ import { upstream, readBody } from './net.mjs';
 import { balanced } from './decipher.mjs';
 import { payloadFromPlayerResponse } from './piped-local.mjs';
 import { getPoToken } from './potoken.mjs';
+import { playerRequest } from './innertube.mjs';
 
 const BASE = () => (process.env.UMBRA_YT_BASE || 'https://www.youtube.com').replace(/\/+$/, '');
 const TIMEOUT = Number(process.env.UMBRA_WATCHPAGE_TIMEOUT || 10000);
@@ -72,6 +73,21 @@ export function extractJson(html, name) {
   return null;
 }
 
+/**
+ * The object passed to a call like `ytcfg.set({...})`.
+ *
+ * Not the same shape as a `var x = {...}` assignment, which is why the
+ * assignment patterns above miss it — and missing it is what made the embed
+ * page look empty when it was in fact the one surface still answering us.
+ */
+export function extractCallArg(html, marker) {
+  const i = html.indexOf(marker);
+  if (i < 0) return null;
+  const span = balanced(html, i + marker.length, '{}');
+  if (!span) return null;
+  try { return JSON.parse(span.body); } catch { return null; }
+}
+
 async function getPage(url, cookie) {
   const res = await upstream(url, {
     timeout: TIMEOUT,
@@ -108,7 +124,35 @@ export async function playerResponse(videoId) {
   for (const s of surfaces) {
     try {
       const html = await getPage(s.url, jar);
-      const pr = extractJson(html, 'ytInitialPlayerResponse');
+      let pr = extractJson(html, 'ytInitialPlayerResponse')
+        || extractJson(html, 'ytInitialEmbeddedPlayerResponse');
+      /* The embed page usually carries no playerResponse at all — it carries
+         a ytcfg, and the player fetches the rest itself. That config is worth
+         more than the page: it holds an API key and a VISITOR_DATA minted for
+         this request, which is a fresher identity than our cached one. So
+         rather than give up, spend them on an embedded player call. */
+      if (!pr) {
+        const cfg = extractCallArg(html, 'ytcfg.set(');
+        const key = cfg && (cfg.INNERTUBE_API_KEY
+          || (cfg.WEB_PLAYER_CONTEXT_CONFIGS || {}).innertubeApiKey);
+        const vis = cfg && (cfg.VISITOR_DATA || cfg.visitorData);
+        if (key || vis) {
+          try {
+            const viaCfg = await playerRequest(videoId, 'web_embedded', {
+              visitorData: vis || '', apiKey: key || '', poToken: await getPoToken(vis || ''),
+            });
+            const sd = (viaCfg || {}).streamingData || {};
+            if (sd.formats || sd.adaptiveFormats || sd.hlsManifestUrl) {
+              return { pr: viaCfg, surface: s.name + '+ytcfg', tried };
+            }
+            tried.push({ surface: s.name + '+ytcfg', note: 'page config accepted but formats were withheld' });
+            continue;
+          } catch (e) {
+            tried.push({ surface: s.name + '+ytcfg', note: String(e.message || e).slice(0, 100) });
+            continue;
+          }
+        }
+      }
       if (!pr) {
         /* Distinguish the consent wall from a markup change: the operator can
            act on one and not the other. */
