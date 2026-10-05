@@ -1292,6 +1292,11 @@ async function wire() {
       dead.status === 200 && /id="player"/.test(dead.text) && info.ok === false &&
       /^\/~umbra\/d\//.test(info.embedDoc || ''),
       'http ' + dead.status + ' ok=' + info.ok);
+    ok('the page offers the frame that actually plays, and says what it costs',
+      /straight from <b>youtube-nocookie\.com<\/b>|straight from youtube-nocookie\.com/.test(dead.text) &&
+      /Google sees your address/.test(dead.text) &&
+      info.directEmbed === 'https://www.youtube-nocookie.com/embed/NoStream123?rel=0&modestbranding=1',
+      String(info.directEmbed));
     ok('and it says which backends were tried, and why it is showing the embed',
       /no playable streams|no .* answered|instance error/i.test(dead.text) &&
       /proxied embed/.test(dead.text) && (info.tried || []).length > 0,

@@ -97,6 +97,10 @@
     if (state.mode === 'direct' && d.directEmbed) {
       var df = document.createElement('iframe');
       df.setAttribute('data-umbra-direct', '1');
+      /* The page carries <meta name="referrer" content="no-referrer">, and a
+         YouTube embed with no Referer at all is refused with error 153 — a
+         black rectangle. Send the origin, and only the origin. */
+      df.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
       df.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
       df.setAttribute('allowfullscreen', '');
       df.setAttribute('style', 'width:100%;aspect-ratio:16/9;border:0;display:block;background:#000');

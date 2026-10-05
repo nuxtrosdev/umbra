@@ -151,11 +151,19 @@ export function watchDoc(p, info, cmts) {
        <span class="chip">${p.audio.length} audio</span><span class="chip">${p.captions.length} caption track(s)</span>
        ${p.isLive ? '<span class="chip warn">live</span>' : ''}</div>`
     : `<p class="warn">${esc(p.reason || 'no playable streams')}</p>
-       <p class="muted">No backend could extract this one, so the player below is the proxied embed:
-       YouTube's own code, running in your browser, inside Umbra. Your browser still never talks to
-       Google — every byte is fetched by this origin — and the proof of origin that player mints is
-       kept and reused on the native path, which is the thing a datacentre address cannot produce
-       on its own.</p>`}
+       ${p.directEmbed
+      ? `<p class="muted">No backend could extract this one — every provider is refused by the
+         address this server runs on. The player below is therefore loaded by <b>your browser,
+         straight from youtube-nocookie.com</b>, which is the one request Google will answer:
+         your browser is a legitimate client and nothing has to be worked around. That frame, and
+         only that frame, is outside Umbra — Google sees your address for the video and nothing
+         else on this page. The proxied embed is one click away if you would rather keep the
+         boundary and accept a black player.</p>`
+      : `<p class="muted">No backend could extract this one, so the player below is the proxied
+         embed: YouTube's own code, running in your browser, inside Umbra. Your browser still
+         never talks to Google — every byte is fetched by this origin — and the proof of origin
+         that player mints is kept and reused on the native path. On a datacentre address this
+         often renders black; <code>UMBRA_DIRECT_EMBED=1</code> offers the frame that plays.</p>`}`}
   <div id="player" data-info='${info}'></div>
   ${p.desc ? `<h2>Description</h2><div class="tdesc">${esc(p.desc)}</div>` : ''}
   ${cmts && cmts.items && cmts.items.length
