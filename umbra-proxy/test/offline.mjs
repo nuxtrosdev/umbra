@@ -223,6 +223,73 @@ async function unit() {
       g.__UMBRA_DIAG__ === diag && g.UMBRA.url === 'umbra://www.youtube-nocookie.com/embed/dQw4w9WgXcQ');
   }
 
+  /* ---- two realms: the framer must not overrule a frame that speaks ----
+     The guard above fixes the recycled-realm case. It does not touch the
+     other half: patchRealm wraps the CHILD realm's prototypes in the
+     PARENT's closure, and on a loaded frame (load event, adoption sweep,
+     contentWindow getter) that wrapper lands OUTSIDE the child's own hook —
+     so the parent's base is consulted first and the embed's references went
+     to https://tube/ anyway. A realm carrying its own shim is off limits. */
+  {
+    const src = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+    const noop = () => {};
+    const ctxEl = {
+      id: 'umbra-ctx',
+      textContent: JSON.stringify({
+        url: 'umbra://tube/watch?v=dQw4w9WgXcQ', dir: 'umbra://tube/', tab: 'T1', frame: 'top',
+        key: 'K', session: 'S', origin: 'https://proxy.example', ephemeral: 1, hops: [],
+      }),
+    };
+    const g = {
+      TextEncoder, btoa, URL, console,
+      document: {
+        readyState: 'complete', title: '', documentElement: {},
+        getElementById: (id) => (id === 'umbra-ctx' ? ctxEl : null),
+        querySelector: () => null, querySelectorAll: () => [],
+        addEventListener: noop, createElement: () => ({ setAttribute: noop }),
+      },
+      addEventListener: noop, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: noop,
+      Element: function Element() {},
+    };
+    g.Element.prototype = { setAttribute: noop };
+    g.window = g; g.top = g; g.parent = g; g.self = g;
+    vm.createContext(g);
+    vm.runInContext(src, g);
+
+    /* a synthetic child realm: one reference-bearing prototype is enough to
+       see whether the framer reached in */
+    const childRealm = (own) => {
+      const HTMLScriptElement = function () {};
+      let stored = '';
+      Object.defineProperty(HTMLScriptElement.prototype, 'src', {
+        configurable: true,
+        get() { return stored; },
+        set(v) { stored = 'NATIVE:' + v; },
+      });
+      const Element = function () {};
+      Element.prototype = { setAttribute: noop };
+      const w = {
+        HTMLScriptElement, Element, document: { readyState: 'complete' },
+        __UMBRA_SHIM__: own || undefined,
+        probe() { const n = new HTMLScriptElement(); n.src = '/youtubei/v1/log_event'; return stored; },
+      };
+      return w;
+    };
+
+    const own = childRealm(true);
+    g.__umbraAdopt.patchRealm(own);
+    ok('a frame carrying its own shim is left to resolve its own references',
+      own.probe() === 'NATIVE:/youtubei/v1/log_event' && own.__UMBRA_REALM__ === 1,
+      own.probe());
+
+    /* and the frame that has nothing of its own is still covered — a blank
+       realm a page is about to write into must not reach the network raw */
+    const blank = childRealm(false);
+    g.__umbraAdopt.patchRealm(blank);
+    ok('a frame with no shim of its own is still patched by its framer',
+      /\/~umbra\/p\//.test(blank.probe()), blank.probe());
+  }
+
   /* The parent must not hand its own context to a frame that is on its way to
      a document of its own — the realm is patched, the context is not. */
   {

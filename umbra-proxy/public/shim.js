@@ -793,6 +793,21 @@
       /* idempotent success: the realm is patched, so there is nothing left
          to retry — callers treat false as "queue me again". */
       if (win.__UMBRA_REALM__) return true;
+      /* A document that arrived with a shim of its own already speaks for
+         itself, against its own logical base. Patching it now would wrap its
+         prototypes in OUR closure — and ours would be the OUTER layer, so it
+         would see every reference first and resolve it against the FRAMER's
+         base before the frame's own hook ever ran.
+         That is not hypothetical: the frame's load event, the adoption sweep
+         and the contentWindow getter all reach a fully loaded child, and
+         `navigationPending` deliberately reports false for it. A YouTube
+         embed inside umbra://tube/watch therefore had its own correct base
+         overruled on load, and every dependency its player asked for went to
+         https://tube/… — the crash this whole chase was about.
+         The realm is already safe; record that and leave it alone. */
+      try {
+        if (win.__UMBRA_SHIM__) { win.__UMBRA_REALM__ = 1; return true; }
+      } catch (eX) { return false; }
       var doc = win.document;
       if (!doc) return false;
       var mw = mwOf(win);
@@ -876,6 +891,14 @@
       });
       return true;
     }
+
+    /* Adoption is the one capability that acts on a realm other than this
+       one, and no headless browser is available to drive it. Published here,
+       next to the thing it publishes, so a later step failing in a thin realm
+       cannot quietly take it down — it grants nothing a page could not
+       already do to its own frames. */
+    ADOPT.patchRealm = patchRealm;
+    try { window.__umbraAdopt = ADOPT; } catch (ePub) {}
 
     /**
      * Is this frame still sitting on the throwaway initial about:blank with a
