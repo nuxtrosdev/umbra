@@ -290,11 +290,12 @@ async function unit() {
       /\/~umbra\/p\//.test(blank.probe()), blank.probe());
   }
 
-  /* ---- the direct embed is a door, and it is locked by default ----
+  /* ---- the direct embed: on by default, and narrow ----
      The only player that never has to defeat BotGuard is one the visitor's
      own browser loads from Google — which is also the only thing that puts
-     the visitor's address in front of Google. So: off unless asked for, and
-     when it is on it widens exactly one directive. */
+     the visitor's address in front of Google. It is offered because it is
+     the one that plays; it must stay switchable, and it must widen exactly
+     one directive and no more. */
   {
     const P2 = await import('../server/piped.mjs');
     const ctx2 = { tabId: 'T1', session: 'S', key: 'K', gen: 'G', policy: { ephemeral: 1 } };
@@ -305,12 +306,13 @@ async function unit() {
       if (before === undefined) delete process.env.UMBRA_DIRECT_EMBED; else process.env.UMBRA_DIRECT_EMBED = before;
       return out;
     };
-    ok('no direct-to-google embed unless the operator asked for one',
-      payload(null).directEmbed === null, String(payload(null).directEmbed));
-    const on = payload('1');
-    ok('and when asked for, it is a real youtube url, not a wire path',
+    const on = payload(null);
+    ok('the player that actually plays is offered by default',
       on.directEmbed === 'https://www.youtube-nocookie.com/embed/' + VID + '?rel=0&modestbranding=1',
-      on.directEmbed);
+      String(on.directEmbed));
+    ok('and an operator who wants the boundary kept can switch it off',
+      payload('0').directEmbed === null && payload('off').directEmbed === null,
+      String(payload('0').directEmbed));
     ok('the proxied embed stays available beside it',
       /^\/~umbra\/d\//.test(on.embedDoc), on.embedDoc);
 
@@ -1296,6 +1298,14 @@ async function wire() {
       (info.tried || []).map((t) => t.instance).join(','));
     ok('the embed document it points at is served through the wire',
       (await call(info.embedDoc)).status === 200);
+    /* the direct frame is useless if the policy refuses it, so the two
+       halves of the switch are checked against each other on a real
+       response, not just in the payload */
+    const csp = dead.headers.get('content-security-policy') || '';
+    ok('and the policy on that page actually permits the direct frame',
+      /frame-src 'self' blob: https:\/\/www\.youtube-nocookie\.com https:\/\/www\.youtube\.com/.test(csp) &&
+      /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
+      (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
   /* The failure the provider work exists for: the local engine is bot-gated
      AND every Piped instance is refusing at once. Before this, Tube died here
