@@ -16,8 +16,31 @@
  */
 (function () {
   var ctxEl = document.getElementById('umbra-ctx');
-  if (!ctxEl || window.__UMBRA_SHIM__) return;
+  if (!ctxEl) return;
+  var CTX_TEXT = ctxEl.textContent;
+  /* One realm can host two documents. An iframe's throwaway initial
+     about:blank is adopted by its parent (so a document.write into a frame
+     that has not navigated yet cannot escape the wire), and that adoption
+     installs the *parent's* shim closure — parent logical base and all.
+     Browsers then reuse the Window object when the frame's real document
+     commits, so __UMBRA_SHIM__ and that closure are still standing and the
+     shim arriving with the new document used to bail out right here. The
+     child kept answering with its parent's base: a YouTube embed framed by
+     umbra://tube/ resolved every relative reference to https://tube/… and
+     its player never loaded a single dependency.
+     Same context: already installed, nothing to do. Different context: this
+     is a different document in a recycled realm, so re-install against the
+     context that belongs to it. The hooks below are idempotent — they wrap
+     the live descriptor, and an already-wired reference passes through
+     wire() untouched — so the newest (correct) base ends up outermost. */
+  if (window.__UMBRA_SHIM__ && window.__UMBRA_CTX__ === CTX_TEXT) return;
   window.__UMBRA_SHIM__ = true;
+  window.__UMBRA_CTX__ = CTX_TEXT;
+  /* Which installation is current. A superseded one still holds live timers
+     and closures over the old base, so it checks this before doing anything
+     that would speak for the document. */
+  var GEN = window.__UMBRA_GEN__ = (window.__UMBRA_GEN__ || 0) + 1;
+  function current() { return window.__UMBRA_GEN__ === GEN; }
   var DIAG = { version: 'umbra/1.0', done: [], failed: [] };
   var ADOPT = { adoptNode: function () {} }; /* filled by the adopt step */
   window.__UMBRA_DIAG__ = DIAG;
@@ -27,7 +50,7 @@
   }
 
   var ctx;
-  try { ctx = JSON.parse(ctxEl.textContent); } catch (e) { DIAG.failed.push('ctx: parse'); return; }
+  try { ctx = JSON.parse(CTX_TEXT); } catch (e) { DIAG.failed.push('ctx: parse'); return; }
   var ORIGIN = ctx.origin;
   var PFX = '/~umbra/';
   var LOGICAL = ctx.url;
@@ -854,16 +877,44 @@
       return true;
     }
 
-    function injectShimInto(win) {
+    /**
+     * Is this frame still sitting on the throwaway initial about:blank with a
+     * real document on the way? That document arrives carrying the server's
+     * own shim and its own logical base, and — because the Window object is
+     * reused across that first navigation — anything we install now outlives
+     * the blank document and speaks for the real one. The realm still gets
+     * patched (a write before the load must not escape), but our context is
+     * ours, not the child's, so it is never handed over.
+     */
+    function awaitingOwnDocument(el, win) {
+      if (!el || !win) return false;
+      var src = '';
+      try { src = String((el.getAttribute && el.getAttribute('src')) || ''); } catch (e) { return false; }
+      if (!src || /^(about|javascript|data|blob):/i.test(src)) return false;
+      try { if (el.hasAttribute && el.hasAttribute('srcdoc')) return false; } catch (e1) {}
+      try {
+        var d = win.document;
+        if (!d) return true;
+        if (d.getElementById && d.getElementById('umbra-ctx')) return false;
+        var here = String((d.location && d.location.href) || d.URL || '');
+        return here === '' || here === 'about:blank';
+      } catch (e2) { return false; }
+    }
+
+    function injectShimInto(win, el) {
       try {
         var d = win.document;
         if (!d || !d.documentElement || win.__UMBRA_SHIM__ || win.__UMBRA_INJECTED__ || !SRC) return;
+        /* a superseded installation would hand down a base that is no longer
+           this document's */
+        if (!current()) return;
+        if (awaitingOwnDocument(el, win)) return;
         win.__UMBRA_INJECTED__ = 1;
         if (!d.getElementById('umbra-ctx')) {
           var c = d.createElement('script');
           c.id = 'umbra-ctx';
           c.type = 'application/json';
-          c.textContent = ctxEl.textContent;
+          c.textContent = CTX_TEXT;
           d.documentElement.appendChild(c);
         }
         try { win.__UMBRA_SRC_CACHE = SRC; } catch (e0) {}
@@ -873,17 +924,17 @@
       } catch (e) {}
     }
 
-    function adopt(win) {
+    function adopt(win, el) {
       if (!win || win === window) return false;
       try {
         /* already adopted, or carrying the server-injected shim: that is
            success, not failure. Reporting false here re-queues the frame and
            the retry drain below spins on it forever. */
-        if (win.__UMBRA_SHIM__ || win.__UMBRA_REALM__) { patchRealm(win); injectShimInto(win); return true; }
+        if (win.__UMBRA_SHIM__ || win.__UMBRA_REALM__) { patchRealm(win); injectShimInto(win, el); return true; }
       } catch (e0) { return false; } /* cross-origin: nothing we can do from here */
       try { void win.document.location.href; } catch (e) { return false; }
       var patched = patchRealm(win);
-      injectShimInto(win);
+      injectShimInto(win, el);
       return patched;
     }
 
@@ -931,7 +982,7 @@
         if (pending.indexOf(el) === -1 && pending.length < 64) pending.push(el);
         return;
       }
-      if (adopt(w)) return;
+      if (adopt(w, el)) return;
       if (pending.indexOf(el) === -1 && pending.length < 64) pending.push(el);
     }
     /* a detached frame is adoptable the moment it exists — its document.write
@@ -988,7 +1039,7 @@
                here would re-enter this same function */
             try {
               var w = winOf(this);
-              if (w && !navigationPending(this, w)) { patchRealm(w); injectShimInto(w); }
+              if (w && !navigationPending(this, w)) { patchRealm(w); injectShimInto(w, this); }
             } catch (e2) {}
             return v;
           },
@@ -1004,6 +1055,7 @@
     var hadFrames = false;
     var sweep = setInterval(function () {
       try {
+        if (!current()) return clearInterval(sweep);
         /* budgeted drain: frames adoptNode re-queues wait for the next tick.
            An unbounded while here spins forever on any frame whose adoption
            keeps failing (or keeps reporting failure) within one tick. */

@@ -199,6 +199,45 @@ export function channelIdOf(u) {
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
+/**
+ * Point an image back at the host that actually owns it.
+ *
+ * Piped and Invidious hand out thumbnails and avatars through their *own*
+ * image proxy (`https://proxy.<instance>/vi/<id>/hq.jpg?host=i.ytimg.com`),
+ * which is useful to their clients and useless to Umbra: we proxy every byte
+ * ourselves, so routing an i.ytimg.com image through a third party adds a hop
+ * and a dependency on a host that may well be gone — a dead instance's proxy
+ * is exactly how a page full of 404 thumbnails happens, long after the API
+ * call that named them succeeded.
+ *
+ * Conservative on purpose: only the shapes those two projects actually mint
+ * are unwrapped, and anything else is handed back untouched.
+ */
+const YT_IMG_HOST = /(^|\.)(ytimg\.com|ggpht\.com|googleusercontent\.com|youtube\.com)$/i;
+export function unproxyImage(raw) {
+  const s = String(raw || '');
+  if (!/^https?:\/\//i.test(s)) return s;
+  let u;
+  try { u = new URL(s); } catch { return s; }
+  if (YT_IMG_HOST.test(u.hostname)) return s;
+  /* 1. the explicit form: the real host travels as ?host= */
+  const declared = u.searchParams.get('host');
+  if (declared && YT_IMG_HOST.test(declared)) {
+    u.searchParams.delete('host');
+    const q = u.searchParams.toString();
+    return 'https://' + declared + u.pathname + (q ? '?' + q : '');
+  }
+  /* 2. the implicit form: the path alone identifies the owner. A ?host= we
+     refused to believe travels no further — it is the proxy's routing
+     instruction, not part of the image's address. */
+  if (declared) u.searchParams.delete('host');
+  const q = u.searchParams.toString();
+  const tail = (q ? '?' + q : '') + u.hash;
+  if (/^\/(vi|vi_webp|sb)\//.test(u.pathname)) return 'https://i.ytimg.com' + u.pathname + tail;
+  if (/^\/(ggpht|ytc)\//.test(u.pathname)) return 'https://yt3.ggpht.com' + u.pathname.replace(/^\/ggpht/, '') + tail;
+  return s;
+}
+
 /** Normalise one list item (search / trending / related / channel video). */
 export function normItem(it, ctx) {
   const id = videoIdOf(it.url);
@@ -213,9 +252,9 @@ export function normItem(it, ctx) {
     uploaded: it.uploadedDate || it.uploaded || '',
     desc: it.shortDescription || '',
     isShort: !!it.isShort,
-    thumb: it.thumbnail || '',
-    thumbWire: it.thumbnail ? href(ctx, it.thumbnail, 's') : null,
-    avatarWire: it.uploaderAvatar ? href(ctx, it.uploaderAvatar, 's') : null,
+    thumb: unproxyImage(it.thumbnail || ''),
+    thumbWire: it.thumbnail ? href(ctx, unproxyImage(it.thumbnail), 's') : null,
+    avatarWire: it.uploaderAvatar ? href(ctx, unproxyImage(it.uploaderAvatar), 's') : null,
   };
 }
 
@@ -270,7 +309,7 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
       };
     });
 
-  const thumb = s.thumbnailUrl || '';
+  const thumb = unproxyImage(s.thumbnailUrl || '');
   const ok = !!(muxed.length || video.length);
 
   return {

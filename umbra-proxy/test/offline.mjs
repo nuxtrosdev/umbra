@@ -153,6 +153,111 @@ async function unit() {
     ok('a nested worker is refused rather than left unshimmed', /not proxied/.test(nested || ''), nested);
   }
 
+  /* ---- one realm, two documents ----
+     An iframe's initial about:blank is adopted by its parent, which installs
+     the parent's shim closure in that realm. Browsers reuse the Window
+     object when the frame's real document commits, so the shim arriving with
+     that document used to find __UMBRA_SHIM__ already set and bail out —
+     leaving the child resolving its relative references against the PARENT's
+     logical base. A YouTube embed framed by umbra://tube/ therefore asked
+     for https://tube/youtubei/v1/… and every dependency 502'd.
+     These run the real shim source twice in one synthetic realm. */
+  {
+    const src = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+    const ctxFor = (url, dir) => JSON.stringify({
+      url, dir, tab: 'T1', frame: 'top', key: 'K', session: 'S',
+      origin: 'https://proxy.example', ephemeral: 1, hops: [],
+    });
+    const PARENT = ctxFor('umbra://tube/watch?v=dQw4w9WgXcQ', 'umbra://tube/');
+    const CHILD = ctxFor('umbra://www.youtube-nocookie.com/embed/dQw4w9WgXcQ',
+      'umbra://www.youtube-nocookie.com/embed/');
+    const ctxEl = { id: 'umbra-ctx', textContent: PARENT };
+    const noop = () => {};
+    const g = {
+      TextEncoder, btoa, URL, console,
+      document: {
+        readyState: 'complete', title: '', documentElement: {},
+        getElementById: (id) => (id === 'umbra-ctx' ? ctxEl : null),
+        querySelector: () => null, querySelectorAll: () => [],
+        addEventListener: noop, createElement: () => ({ setAttribute: noop }),
+      },
+      addEventListener: noop, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: noop,
+      /* enough of a realm for the capability steps to install or fail
+         individually; shim.js records what it could not patch in __UMBRA_DIAG__ */
+      Element: function Element() {},
+    };
+    g.Element.prototype = { setAttribute: noop };
+    g.window = g;
+    g.top = g;
+    g.parent = g;
+    g.self = g;
+    vm.createContext(g);
+    /* the parent document's shim, running in this realm first */
+    vm.runInContext(src, g);
+    const decode = (w) => Buffer.from(String(w).split('/~umbra/p/')[1].split('/')[1].split(/[/?]/)[0], 'base64url').toString('utf8');
+    ok('the shim installs the logical base of the document it came with',
+      g.UMBRA.url === 'umbra://tube/watch?v=dQw4w9WgXcQ' &&
+      decode(g.UMBRA.wire('/youtubei/v1/log_event', 'x')) === 'https://tube/youtubei/v1/log_event',
+      g.UMBRA.url);
+
+    /* the frame's own document commits; the realm (and __UMBRA_SHIM__) is the
+       one the parent already touched, but the context is now the child's */
+    ctxEl.textContent = CHILD;
+    vm.runInContext(src, g);
+    ok('a second document in a recycled realm re-anchors on its own base',
+      g.UMBRA.url === 'umbra://www.youtube-nocookie.com/embed/dQw4w9WgXcQ',
+      g.UMBRA.url);
+    ok('the embed resolves relative references against itself, not its framer',
+      decode(g.UMBRA.wire('/youtubei/v1/log_event', 'x')) ===
+        'https://www.youtube-nocookie.com/youtubei/v1/log_event',
+      decode(g.UMBRA.wire('/youtubei/v1/log_event', 'x')));
+
+    /* and the guard still holds for the ordinary case: the same context twice
+       (the parent re-injecting the shim into a frame it already adopted) must
+       not reinstall every hook on top of itself */
+    const diag = g.__UMBRA_DIAG__;
+    vm.runInContext(src, g);
+    ok('the superseded installation knows it is no longer current',
+      g.__UMBRA_GEN__ === 2, String(g.__UMBRA_GEN__));
+    ok('the same context twice is still a no-op, not a reinstall',
+      g.__UMBRA_DIAG__ === diag && g.UMBRA.url === 'umbra://www.youtube-nocookie.com/embed/dQw4w9WgXcQ');
+  }
+
+  /* The parent must not hand its own context to a frame that is on its way to
+     a document of its own — the realm is patched, the context is not. */
+  {
+    const src = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+    ok('a frame awaiting its own document is patched but never given our context',
+      /function awaitingOwnDocument/.test(src) &&
+      /if \(awaitingOwnDocument\(el, win\)\) return;/.test(src) &&
+      /injectShimInto\(win, el\)/.test(src));
+  }
+
+  /* ---- instance image proxies ----
+     A thumbnail named by a Piped/Invidious instance points at *that
+     instance's* image proxy. Umbra proxies the bytes itself, so the hop buys
+     nothing and costs a dependency on a host that is often already gone —
+     the 404s outlive the API call that succeeded. */
+  {
+    const PP = await import('../server/piped.mjs');
+    ok('a piped image proxy is unwrapped back to the host it declares',
+      PP.unproxyImage('https://proxy.piped.private.coffee/vi/kNeTn59Fymw/hqdefault.jpg?host=i.ytimg.com&sqp=x') ===
+        'https://i.ytimg.com/vi/kNeTn59Fymw/hqdefault.jpg?sqp=x',
+      PP.unproxyImage('https://proxy.piped.private.coffee/vi/kNeTn59Fymw/hqdefault.jpg?host=i.ytimg.com&sqp=x'));
+    ok('an invidious image path is unwrapped without a host hint',
+      PP.unproxyImage('https://inv.example/vi/kNeTn59Fymw/maxres.jpg') === 'https://i.ytimg.com/vi/kNeTn59Fymw/maxres.jpg' &&
+      PP.unproxyImage('https://inv.example/ggpht/abc=s176') === 'https://yt3.ggpht.com/abc=s176');
+    ok('anything that is not one of those two shapes is left alone',
+      PP.unproxyImage('https://i.ytimg.com/vi/x/hq.jpg') === 'https://i.ytimg.com/vi/x/hq.jpg' &&
+      PP.unproxyImage('https://cdn.example/logo.png') === 'https://cdn.example/logo.png' &&
+      PP.unproxyImage('') === '');
+    /* the declared host is not a free redirect: an instance cannot aim
+       Umbra's fetcher anywhere it likes by setting ?host= */
+    ok('a declared host that is not a youtube image host is ignored',
+      PP.unproxyImage('https://proxy.example/vi/x/hq.jpg?host=evil.example') === 'https://i.ytimg.com/vi/x/hq.jpg',
+      PP.unproxyImage('https://proxy.example/vi/x/hq.jpg?host=evil.example'));
+  }
+
   /* ---- the watch page as a second extraction surface ---- */
   const WP = await import('../server/watchpage.mjs');
   const TB = await import('../server/tube.mjs');
@@ -631,6 +736,18 @@ async function wire() {
   const doc = await call((await mint(MOCK + '/', 'd', tn.tab)).href);
   ok('mode d serves a rewritten document', doc.status === 200 && /Mock Origin/.test(doc.text) && /umbra-ctx/.test(doc.text), doc.meta?.kind);
   ok('shim + logical context injected', /shim\.js/.test(doc.text) && /"url":"umbra:\/\//.test(doc.text));
+  /* Behind a TLS-terminating proxy the socket is plain http and the scheme
+     only exists in a header — which chained proxies append to rather than
+     replace. Reading the whole list made the origin "https, http://host",
+     and every url the shim mints at runtime inherits it. */
+  {
+    const fwd = await call((await mint(MOCK + '/', 'd', tn.tab)).href, {
+      headers: { 'x-forwarded-proto': 'https, http', 'x-forwarded-host': 'edge.example, inner.example' },
+    });
+    const octx = JSON.parse(/<script[^>]*id="umbra-ctx"[^>]*>([\s\S]*?)<\/script>/.exec(fwd.text)[1]);
+    ok('a chained x-forwarded-proto still yields one usable origin',
+      octx.origin === 'https://edge.example', octx.origin);
+  }
   ok('no bare mock refs left in attributes', !/(?:href|src|poster|action)="(?:http:\/\/127\.0\.0\.1|http:\/\/localhost)/.test(doc.text));
   ok('upstream framing headers stripped, umbra cloak applied',
     !doc.headers.get('x-frame-options') && /default-src 'self'/.test(doc.headers.get('content-security-policy') || ''));

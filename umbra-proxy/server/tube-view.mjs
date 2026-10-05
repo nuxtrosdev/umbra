@@ -13,9 +13,13 @@
  */
 
 import { href } from './protocol.mjs';
-import { toPlayerPayload } from './piped.mjs';
+import { toPlayerPayload, unproxyImage } from './piped.mjs';
 
-const wireImg = (ctx, u) => (u ? href(ctx, u, 's') : null);
+/* One chokepoint for every image Umbra Tube renders. Instances hand back
+   thumbnails through their own image proxy; Umbra proxies the bytes itself,
+   so the owner's host is both one hop shorter and still alive when the
+   instance that named it is not. */
+const wireImg = (ctx, u) => (u ? href(ctx, unproxyImage(u), 's') : null);
 const best = (list) => (Array.isArray(list) && list.length ? list[0].url : '');
 
 /** Normalized Video → video card. */

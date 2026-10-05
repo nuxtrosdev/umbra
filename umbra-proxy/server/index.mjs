@@ -159,9 +159,18 @@ const CSP_SHELL = [
 ].join('; ');
 const isHtml = (headers) => /text\/html/i.test(String((headers && headers['content-type']) || ''));
 
+/* Every runtime-minted wire url is absolute against this origin, so getting it
+   wrong behind a TLS-terminating proxy means the page is https and its own
+   subresources are http — mixed content, blocked or warned about depending on
+   the kind. Chained proxies append rather than replace, so these headers
+   arrive as lists ("https, http"); the first entry is the one the browser
+   actually spoke to. */
+const firstHop = (v) => String(v || '').split(',')[0].trim();
 function originOf(req) {
-  const proto = req.headers['x-forwarded-proto'] || (req.socket && req.socket.encrypted ? 'https' : 'http');
-  return proto + '://' + (req.headers['x-forwarded-host'] || req.headers.host);
+  const fwd = firstHop(req.headers['x-forwarded-proto']);
+  const proto = /^https?$/i.test(fwd) ? fwd.toLowerCase() : (req.socket && req.socket.encrypted ? 'https' : 'http');
+  const host = firstHop(req.headers['x-forwarded-host']) || req.headers.host || '';
+  return proto + '://' + host;
 }
 
 function readReq(req, limit = 6 * 1024 * 1024) {
