@@ -184,6 +184,7 @@ format metadata, and what a caller does with those URLs is its own decision.
 | `UMBRA_POT_PROVIDER_URL` | — | A bgutil-style PO token minting service, e.g. `http://127.0.0.1:4416`. |
 | `UMBRA_YT_COOKIES` | — | Cookie header for a signed-in YouTube session. |
 | `UMBRA_POT_TTL` | `21600000` | PO token cache lifetime, ms. |
+| `UMBRA_DIRECT_EMBED` | off | Offer a YouTube embed loaded **straight from Google**, outside the proxy. See below. |
 | `UMBRA_POT_HARVEST_TTL` | `21600000` | How long a token harvested from a visitor's embed is reused, ms. |
 | `UMBRA_API_PUBLIC` | off | Serve `/api/youtube/*` to callers with no Umbra session. |
 | `UMBRA_PROVIDERS` | `innertube,piped,invidious,poketube,newpipe,youtubejs,ytdlp` | Provider order and membership. |
@@ -280,6 +281,32 @@ Two rules make that safe rather than clever:
 Nothing is minted and nothing is forged; this is observation. It costs no
 configuration, and `watch` a single video through the embed to prime it.
 `poToken.sources.harvested` on the diagnose endpoint reports what was seen.
+
+#### The escape hatch: an embed that leaves the proxy
+
+There are only three ways a page can show a working YouTube player: extract
+the streams server-side, proxy YouTube's own embed, or let the visitor's
+browser load the embed directly from Google. Umbra does the first two. The
+third is what most "media sections" on unblocker sites actually do, and the
+reason it works is not clever engineering — **the browser genuinely is a
+legitimate client**: residential address, real cookies, real BotGuard. There
+is nothing to defeat.
+
+It is also the one thing that breaks the property the rest of this proxy
+exists to hold. With `UMBRA_DIRECT_EMBED=1`, `youtube-nocookie.com` sees the
+visitor's address, not this origin. So:
+
+- it is **off by default**, and nothing offers it when it is off;
+- when on, the player shows it as an extra control, labelled
+  *"load direct from youtube (leaves umbra)"*, beside the proxied player —
+  never instead of it;
+- it widens exactly one CSP directive, `frame-src`, for two hosts. Everything
+  else stays `'self'`, so the leak is the frame and nothing but the frame;
+- the frame carries `data-umbra-direct`, the single attribute that makes the
+  shim stand aside. Nothing else in the codebase sets it.
+
+Use it when you control the deployment and the visitors understand the
+trade. Leave it off if the boundary is the point.
 
 #### When extraction fails, the page still plays
 

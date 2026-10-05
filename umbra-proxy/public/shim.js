@@ -139,6 +139,15 @@
     if (name === 'href' && el && /^(A|AREA)$/.test(String(el.tagName))) return 'd';
     return MODE_BY_ATTR[name] || 's';
   }
+  /* An element the page's own Umbra UI marked as deliberately un-proxied.
+     Exactly one thing uses it — the opt-in direct YouTube embed, where the
+     whole point is that the visitor's browser talks to Google itself — and
+     the server only permits that host in frame-src when the operator turned
+     the option on, so a hostile page setting the attribute buys nothing the
+     policy would allow anyway. */
+  function isDirect(el) {
+    try { return !!(el && el.getAttribute && el.getAttribute('data-umbra-direct')); } catch (e) { return false; }
+  }
   var nativeSetAttribute = Element.prototype.setAttribute;
 
   step('refs', function () {
@@ -150,6 +159,7 @@
         configurable: true, enumerable: d.enumerable,
         get: function () { return d.get ? d.get.call(this) : ''; },
         set: function (v) {
+          if (isDirect(this)) return d.set.call(this, v);
           var mode = forceMode || modeFor(this, name);
           var before = typeof v === 'string' && v.indexOf('umbra://') === 0 ? v : null;
           d.set.call(this, wire(v, mode));
@@ -192,6 +202,7 @@
 
     Element.prototype.setAttribute = function (name, value) {
       var n = String(name).toLowerCase();
+      if (n !== 'data-umbra-direct' && isDirect(this)) return nativeSetAttribute.call(this, name, value);
       if (n === 'data-umbra' || n === 'srcset' || n === 'data-srcset') {
         if (n !== 'data-umbra') {
           var fixed = String(value).split(',').map(function (part) {
@@ -592,6 +603,7 @@
         Array.prototype.forEach.call(m.addedNodes, function (n) {
           if (!n || !n.tagName) return;
           if (/^(IFRAME|FRAME|OBJECT|EMBED)$/.test(n.tagName)) {
+            if (isDirect(n)) return;
             var s = n.getAttribute('src') || n.getAttribute('data');
             if (s && !onWire(s)) n.setAttribute('src', wire(s, 'd'));
             n.setAttribute('data-umbra-frame', '1');

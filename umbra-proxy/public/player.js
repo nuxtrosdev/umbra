@@ -81,6 +81,25 @@
   function mount() {
     stage.innerHTML = '';
     ctl.innerHTML = '';
+    /* Direct mode: the iframe is NOT wired, by design. data-umbra-direct is
+       set before src so the shim's setAttribute hook sees it and stands
+       aside, and the server has already widened frame-src for this host —
+       without that the browser refuses the frame and nothing leaks. */
+    if (state.mode === 'direct' && d.directEmbed) {
+      var df = document.createElement('iframe');
+      df.setAttribute('data-umbra-direct', '1');
+      df.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
+      df.setAttribute('allowfullscreen', '');
+      df.setAttribute('style', 'width:100%;aspect-ratio:16/9;border:0;display:block;background:#000');
+      df.setAttribute('src', d.directEmbed);
+      stage.appendChild(df);
+      ctl.appendChild(btn('back to the proxied player', '', function () { state.mode = 'embed'; mount(); }));
+      readout.textContent = 'direct embed — this frame is loaded by your browser from youtube-nocookie.com, '
+        + 'not through Umbra. YouTube sees your address, and that is why it plays.';
+      host.appendChild(stage); host.appendChild(ctl); host.appendChild(readout);
+      return;
+    }
+
     if (state.mode === 'embed') {
       var f = el('iframe', {
         src: d.embedDoc || 'about:blank', allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen',
@@ -93,6 +112,7 @@
       stage.appendChild(f);
       ctl.appendChild(btn('proxied embed document', 'go', function () {}));
       ctl.appendChild(btn('try native stream', '', function () { state.mode = muxed.length ? 'muxed' : (vids.length ? 'dual' : 'embed'); mount(); }));
+      if (d.directEmbed) ctl.appendChild(btn('load direct from youtube (leaves umbra)', 'warn', function () { state.mode = 'direct'; mount(); }));
       readout.textContent = d.ok ? 'native available' : 'stream URLs withheld upstream: ' + (d.reason || 'blocked') + ' — the embed document is served through Umbra with X-Frame-Options and CSP removed';
       host.appendChild(stage); host.appendChild(ctl); host.appendChild(readout);
       return;

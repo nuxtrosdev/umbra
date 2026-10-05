@@ -290,6 +290,94 @@ async function unit() {
       /\/~umbra\/p\//.test(blank.probe()), blank.probe());
   }
 
+  /* ---- the direct embed is a door, and it is locked by default ----
+     The only player that never has to defeat BotGuard is one the visitor's
+     own browser loads from Google — which is also the only thing that puts
+     the visitor's address in front of Google. So: off unless asked for, and
+     when it is on it widens exactly one directive. */
+  {
+    const P2 = await import('../server/piped.mjs');
+    const ctx2 = { tabId: 'T1', session: 'S', key: 'K', gen: 'G', policy: { ephemeral: 1 } };
+    const payload = (env) => {
+      const before = process.env.UMBRA_DIRECT_EMBED;
+      if (env === null) delete process.env.UMBRA_DIRECT_EMBED; else process.env.UMBRA_DIRECT_EMBED = env;
+      const out = P2.toPlayerPayload({ title: 't', videoStreams: [], audioStreams: [] }, ctx2, VID, 'inst');
+      if (before === undefined) delete process.env.UMBRA_DIRECT_EMBED; else process.env.UMBRA_DIRECT_EMBED = before;
+      return out;
+    };
+    ok('no direct-to-google embed unless the operator asked for one',
+      payload(null).directEmbed === null, String(payload(null).directEmbed));
+    const on = payload('1');
+    ok('and when asked for, it is a real youtube url, not a wire path',
+      on.directEmbed === 'https://www.youtube-nocookie.com/embed/' + VID + '?rel=0&modestbranding=1',
+      on.directEmbed);
+    ok('the proxied embed stays available beside it',
+      /^\/~umbra\/d\//.test(on.embedDoc), on.embedDoc);
+
+    const src = fs.readFileSync(path.join(HERE, '..', 'server', 'index.mjs'), 'utf8');
+    ok('the policy only widens frame-src, and only when the flag is set',
+      /"frame-src 'self' blob:" \+ \(DIRECT_EMBED \? ' ' \+ DIRECT_HOSTS : ''\)/.test(src) &&
+      !/DIRECT_HOSTS/.test(src.split('frame-src')[0].split('const DIRECT_HOSTS')[1] || ''),
+      'frame-src only');
+  }
+
+  /* The shim must stand aside for that one frame and for nothing else. */
+  {
+    const src = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+    const noop = () => {};
+    const ctxEl = {
+      id: 'umbra-ctx',
+      textContent: JSON.stringify({
+        url: 'umbra://tube/watch?v=' + VID, dir: 'umbra://tube/', tab: 'T1', frame: 'top',
+        key: 'K', session: 'S', origin: 'https://proxy.example', ephemeral: 1, hops: [],
+      }),
+    };
+    const attrs = new WeakMap();
+    function Element() {}
+    Element.prototype = {
+      getAttribute(n) { return (attrs.get(this) || {})[n] ?? null; },
+      setAttribute(n, v) { const a = attrs.get(this) || {}; a[n] = String(v); attrs.set(this, a); },
+      hasAttribute(n) { return this.getAttribute(n) !== null; },
+    };
+    const g = {
+      TextEncoder, btoa, URL, console, Element,
+      document: {
+        readyState: 'complete', title: '', documentElement: {},
+        getElementById: (id) => (id === 'umbra-ctx' ? ctxEl : null),
+        querySelector: () => null, querySelectorAll: () => [],
+        addEventListener: noop, createElement: () => ({ setAttribute: noop }),
+      },
+      addEventListener: noop, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: noop,
+    };
+    /* the reference step names these globals directly; a missing one is a
+       ReferenceError that takes the whole step down and makes every
+       assertion below vacuously true */
+    for (const n of ['HTMLAnchorElement', 'HTMLAreaElement', 'HTMLIFrameElement', 'HTMLFrameElement',
+      'HTMLImageElement', 'HTMLScriptElement', 'HTMLLinkElement', 'HTMLMediaElement',
+      'HTMLInputElement', 'HTMLFormElement', 'HTMLObjectElement', 'HTMLQuoteElement',
+      'HTMLSourceElement', 'HTMLTrackElement', 'HTMLEmbedElement', 'HTMLVideoElement', 'HTMLAudioElement']) {
+      g[n] = function () {};
+    }
+    g.window = g; g.top = g; g.parent = g; g.self = g;
+    vm.createContext(g);
+    vm.runInContext(src, g);
+
+    ok('the reference hooks actually installed in this realm',
+      g.__UMBRA_DIAG__.done.indexOf('refs') !== -1, g.__UMBRA_DIAG__.failed.join(' | ').slice(0, 120));
+
+    const marked = new g.Element();
+    marked.setAttribute('data-umbra-direct', '1');
+    marked.setAttribute('src', 'https://www.youtube-nocookie.com/embed/' + VID);
+    ok('a frame marked direct keeps the url it was given',
+      marked.getAttribute('src') === 'https://www.youtube-nocookie.com/embed/' + VID,
+      marked.getAttribute('src'));
+
+    const ordinary = new g.Element();
+    ordinary.setAttribute('src', 'https://www.youtube-nocookie.com/embed/' + VID);
+    ok('an unmarked frame is still pulled onto the wire',
+      /\/~umbra\//.test(ordinary.getAttribute('src')), ordinary.getAttribute('src'));
+  }
+
   /* The parent must not hand its own context to a frame that is on its way to
      a document of its own — the realm is patched, the context is not. */
   {
