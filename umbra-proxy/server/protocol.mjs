@@ -94,13 +94,20 @@ export function decodeToken(tok) {
 }
 
 /** wire path for a rewritten reference */
-export function href(ctx, absUrl, mode) {
+export function href(ctx, absUrl, mode, logicalUrl = '') {
+  /* Most wire resources have one obvious logical address: their upstream URL.
+     A document embedded by another Umbra-authored document is different. Its
+     physical request still names the upstream URL, but its relative runtime
+     references must resolve against the embedded document, never against the
+     parent's logical page. Carry that context in the signed token so it
+     survives the iframe boundary and cannot be confused with user input. */
   const tok = encodeToken({
     u: absUrl,
     t: ctx.tabId || 'anon',
     s: ctx.session || 'anon',
     g: ctx.gen || '',
     m: mode,
+    ...(logicalUrl ? { l: logicalUrl } : {}),
   });
   let name = '';
   try {

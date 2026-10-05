@@ -22,7 +22,7 @@
  *     randomised per request.
  */
 import { upstream, readBody } from './net.mjs';
-import { href } from './protocol.mjs';
+import { href, toUmbra } from './protocol.mjs';
 import {
   LADDER,
   CLIENTS,
@@ -344,7 +344,15 @@ export async function inspect(url, ctx) {
     video: vids.slice(0, 8).map(withWire(ctx)),
     audio: auds.slice(0, 2).map(withWire(ctx)),
     captions: capTracks,
-    embedDoc: href(ctx, 'https://www.youtube.com/embed/' + videoId + '?enablejsapi=1&rel=0&modestbranding=1', 'd'),
+    /* Preserve the embed's logical identity across the document iframe. The
+       wire target may be youtube.com, but this is the nocookie embed surface;
+       relative player-loader URLs must not inherit umbra://tube/watch. */
+    embedDoc: href(
+      ctx,
+      'https://www.youtube.com/embed/' + videoId + '?enablejsapi=1&rel=0&modestbranding=1',
+      'd',
+      toUmbra('https://www.youtube-nocookie.com/embed/' + videoId),
+    ),
     watchDoc: href(ctx, 'https://www.youtube.com/watch?v=' + videoId, 'd'),
     expires: Number(sd.expiresInSeconds || 0),
   };

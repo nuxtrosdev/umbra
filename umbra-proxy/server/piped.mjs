@@ -26,7 +26,7 @@
  * of collapsing into "Piped is down".
  */
 import { upstream, readBody } from './net.mjs';
-import { href } from './protocol.mjs';
+import { href, toUmbra } from './protocol.mjs';
 import { handle as localHandle } from './piped-local.mjs';
 
 /* The instance Umbra runs itself (piped-local.mjs), addressed in-process so
@@ -305,8 +305,16 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
       .filter((r) => videoIdOf(r.url))
       .slice(0, 12)
       .map((r) => normItem(r, ctx)),
-    /* the capsule links back out to the native path for comparison */
-    embedDoc: href(ctx, 'https://www.youtube-nocookie.com/embed/' + videoId, 'd'),
+    /* This is a document boundary, not just another wire asset. The outer
+       Tube page is umbra://tube/watch; keep the embed's own logical base in
+       its signed document token so YouTube's relative module URLs resolve on
+       youtube-nocookie.com instead of the parent virtual host. */
+    embedDoc: href(
+      ctx,
+      'https://www.youtube-nocookie.com/embed/' + videoId,
+      'd',
+      toUmbra('https://www.youtube-nocookie.com/embed/' + videoId),
+    ),
     watchDoc: href(ctx, 'https://www.youtube.com/watch?v=' + videoId, 'd'),
   };
 }

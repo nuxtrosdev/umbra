@@ -901,6 +901,16 @@ async function wire() {
     Array.isArray(tubeInfo.muxed) && tubeInfo.muxed[0].wire.startsWith('/~umbra/m/') &&
     Array.isArray(tubeInfo.captions) && typeof tubeInfo.captions[0].vtt === 'string',
     'muxed=' + tubeInfo.muxed.length + ' caps=' + tubeInfo.captions.length);
+  /* The embed token crosses a real iframe boundary. Its signed payload must
+     carry the child's logical address, rather than relying on the parent
+     Tube document's umbra://tube/watch context. */
+  const embedToken = (tubeInfo.embedDoc.match(/\/~umbra\/d\/([^/]+)/) || [])[1] || '';
+  let embedClaims = {};
+  try { embedClaims = JSON.parse(Buffer.from(embedToken.split('.')[0], 'base64url').toString('utf8')); } catch {}
+  ok('tube embed carries its own youtube-nocookie logical base',
+    embedClaims.l === 'umbra://www.youtube-nocookie.com/embed/' + VID &&
+    embedClaims.u === 'https://www.youtube-nocookie.com/embed/' + VID,
+    JSON.stringify({ u: embedClaims.u, l: embedClaims.l }));
   const tubeStream = await call(tubeInfo.muxed[0].wire, { headers: { range: 'bytes=0-99' } });
   ok('tube stream bytes flow through the umbra media wire with Range',
     tubeStream.status === 206 && tubeStream.bytes.length === 100, tubeStream.status + '/' + tubeStream.bytes.length);

@@ -635,9 +635,16 @@ ${/json/.test(ct) ? '<script>try{var j=JSON.parse(document.querySelector("pre").
   }
   const docCtx = { ...ctx, url: finalUrl };
   let docOut = rewriteHtml(html, { base: baseUrl, ctx: docCtx, mode: 's' });
+  /* A signed child-document token may deliberately carry a logical identity
+     different from the physical upstream URL. This is what keeps a proxied
+     YouTube embed anchored to youtube-nocookie.com when it was opened from
+     umbra://tube/watch, rather than resolving its relative JS against `tube`.
+     Rewrites still use the physical baseUrl; only runtime logical resolution
+     uses the child document's declared identity. */
+  const logicalBase = ctx.logicalUrl || toUmbra(baseUrl);
   const ctxObj = {
-    url: toUmbra(baseUrl),
-    dir: toUmbra(baseUrl.replace(/[^/]*$/, '')),
+    url: logicalBase,
+    dir: logicalBase.replace(/[^/]*$/, ''),
     tab: ctx.tabId,
     frame: 'top',
     key: ctx.key,
@@ -657,10 +664,10 @@ ${/json/.test(ct) ? '<script>try{var j=JSON.parse(document.querySelector("pre").
   send(res, status || 200, {
     'content-type': 'text/html; charset=utf-8',
     'access-control-allow-origin': ctx.origin,
-    'x-umbra-base': toUmbra(baseUrl),
+    'x-umbra-base': logicalBase,
     'cache-control': 'no-store',
     ...metaHeaders({
-      kind: 'doc', url: finalUrl, umbra: toUmbra(baseUrl), status,
+      kind: 'doc', url: finalUrl, umbra: logicalBase, status,
       hops: chain.length, redirected: chain.length > 1, tab: ctx.tabId,
       chain: chain.map((c) => c.status + ' ' + displayHost(c.url)),
     }),
@@ -1406,6 +1413,12 @@ async function route(req, res) {
         errPage(ctx, t ? t.u : 'unsigned', 'token failed signature or session check', []));
     }
     const ctx = mkCtx(t.u, head, t.t);
+    /* A document can cross from an Umbra-authored parent into a proxied
+       child. When its signed wire token carries an explicit logical base,
+       preserve it instead of letting the child inherit the parent's context.
+       The token is already session/generation-bound, so this is not a new
+       untrusted routing input. */
+    if (typeof t.l === 'string' && /^umbra:\/\//i.test(t.l)) ctx.logicalUrl = t.l;
     const opts = { mode: head };
     if (head === 'f') {
       opts.body = await readReq(req);
