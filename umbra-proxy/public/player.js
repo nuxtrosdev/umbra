@@ -13,7 +13,16 @@
   catch (e) { host.innerHTML = '<p class="warn">player payload unreadable</p>'; return; }
 
   var muxed = d.muxed || [], vids = d.video || [], auds = d.auds || d.audio || [], caps = d.captions || [];
-  var state = { mode: d.ok ? (muxed.length ? 'muxed' : (vids.length ? 'dual' : 'embed')) : 'embed', vi: 0, ai: 0, mi: 0 };
+  /* Opening mode. Native streams win when they exist — they are proxied, so
+     nothing leaves the boundary. When extraction produced nothing, the
+     proxied embed is a black rectangle on a scored address and the direct
+     one plays, so that is what mounts: a working player first, with the
+     proxied embed one click away. */
+  var fallback = d.directEmbed ? 'direct' : 'embed';
+  var state = {
+    mode: d.ok ? (muxed.length ? 'muxed' : (vids.length ? 'dual' : fallback)) : fallback,
+    vi: 0, ai: 0, mi: 0,
+  };
 
   function el(tag, attrs, kids) {
     var n = document.createElement(tag);
@@ -93,7 +102,8 @@
       df.setAttribute('style', 'width:100%;aspect-ratio:16/9;border:0;display:block;background:#000');
       df.setAttribute('src', d.directEmbed);
       stage.appendChild(df);
-      ctl.appendChild(btn('back to the proxied player', '', function () { state.mode = 'embed'; mount(); }));
+      ctl.appendChild(btn('use the proxied embed instead', '', function () { state.mode = 'embed'; mount(); }));
+      if (muxed.length || vids.length) ctl.appendChild(btn('try native stream', '', function () { state.mode = muxed.length ? 'muxed' : 'dual'; mount(); }));
       readout.textContent = 'direct embed — this frame is loaded by your browser from youtube-nocookie.com, '
         + 'not through Umbra. YouTube sees your address, and that is why it plays.';
       host.appendChild(stage); host.appendChild(ctl); host.appendChild(readout);

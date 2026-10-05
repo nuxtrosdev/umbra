@@ -184,7 +184,7 @@ format metadata, and what a caller does with those URLs is its own decision.
 | `UMBRA_POT_PROVIDER_URL` | — | A bgutil-style PO token minting service, e.g. `http://127.0.0.1:4416`. |
 | `UMBRA_YT_COOKIES` | — | Cookie header for a signed-in YouTube session. |
 | `UMBRA_POT_TTL` | `21600000` | PO token cache lifetime, ms. |
-| `UMBRA_DIRECT_EMBED` | off | Offer a YouTube embed loaded **straight from Google**, outside the proxy. See below. |
+| `UMBRA_DIRECT_EMBED` | on | A YouTube embed loaded **straight from Google**, outside the proxy. `0` disables. See below. |
 | `UMBRA_POT_HARVEST_TTL` | `21600000` | How long a token harvested from a visitor's embed is reused, ms. |
 | `UMBRA_API_PUBLIC` | off | Serve `/api/youtube/*` to callers with no Umbra session. |
 | `UMBRA_PROVIDERS` | `innertube,piped,invidious,poketube,newpipe,youtubejs,ytdlp` | Provider order and membership. |
@@ -293,20 +293,27 @@ legitimate client**: residential address, real cookies, real BotGuard. There
 is nothing to defeat.
 
 It is also the one thing that breaks the property the rest of this proxy
-exists to hold. With `UMBRA_DIRECT_EMBED=1`, `youtube-nocookie.com` sees the
-visitor's address, not this origin. So:
+exists to hold: `youtube-nocookie.com` sees the visitor's address, not this
+origin. That trade is made in the open:
 
-- it is **off by default**, and nothing offers it when it is off;
-- when on, the player shows it as an extra control, labelled
-  *"load direct from youtube (leaves umbra)"*, beside the proxied player —
-  never instead of it;
+- it is **on by default**, because a proxy that will not play the video is
+  not protecting anyone. `UMBRA_DIRECT_EMBED=0` turns it off and nothing
+  offers it;
+- native streams still win whenever extraction produced any — those are
+  proxied, and nothing leaves the boundary. The direct frame mounts only
+  when there is no playable stream, which is the case where the proxied
+  embed is a black rectangle;
+- it is always labelled: the control reads *"load direct from youtube
+  (leaves umbra)"* and the readout says the frame is loaded by your browser,
+  not through Umbra. The proxied embed stays one click away;
 - it widens exactly one CSP directive, `frame-src`, for two hosts. Everything
   else stays `'self'`, so the leak is the frame and nothing but the frame;
 - the frame carries `data-umbra-direct`, the single attribute that makes the
   shim stand aside. Nothing else in the codebase sets it.
 
-Use it when you control the deployment and the visitors understand the
-trade. Leave it off if the boundary is the point.
+Leave it on if you want the video to play. Turn it off if the boundary is
+the point, and accept that on a datacentre address the result is usually no
+playback at all.
 
 #### When extraction fails, the page still plays
 
