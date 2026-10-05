@@ -323,6 +323,29 @@ the surface most likely to work from a scored address — and the one that
 earns the token the native path is missing. The tried-list is still shown;
 the failure is reported, not hidden.
 
+#### When the browser refuses something, say so
+
+A blocked subresource is invisible to the code that needed it: the browser
+drops the request and the dependent script fails later, somewhere
+unrelated — which is exactly how a refused module load surfaces as an
+unexplained crash inside a minified bundle. Umbra's CSP carries
+`report-uri /~umbra/csp-report`, so the browser already says what it
+refused. Two things were wrong with that: the handler read field names the
+spec does not define (`blocked-url` instead of `blocked-uri`), so every
+entry it stored was blank, and nothing ever surfaced them.
+
+Now each distinct violation is logged once:
+
+```
+umbra: the browser refused script-src-elem → https://www.youtube-nocookie.com/s/_/ytembeds/_/js/k=…
+       · from https://…/~umbra/s/eyJ1Ijo…:94
+```
+
+and `GET /~umbra/csp-log` returns the session's list. A wire path that
+matches no route is logged the same way (`umbra: nothing routes to …`),
+because that is the other way a rewritten reference quietly dies — a script
+rebuilding a URL by string surgery on one Umbra already encoded.
+
 #### Why is the proxied player black?
 
 A frame cannot report its own failure across a document boundary, so a

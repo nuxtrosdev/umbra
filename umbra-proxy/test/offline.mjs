@@ -1315,6 +1315,52 @@ async function wire() {
   const tubeChan = await call((await mint('umbra://tube/channel/UCmock', 'd', tn.tab)).href);
   ok('tube channel page renders uploads', tubeChan.status === 200 && /Channel Upload/.test(tubeChan.text) && /Mock Channel/.test(tubeChan.text));
 
+  /* ---- a refused subresource must not be a silent one ----
+     The browser drops a blocked request and the script that needed it dies
+     somewhere else entirely — which is how a blocked module load shows up
+     as a crash deep inside a minified bundle with no mention of the real
+     cause. The report carries the answer; Umbra was reading field names
+     that do not exist, so every entry it stored was blank. */
+  {
+    const r1 = await call('/~umbra/csp-report', {
+      method: 'POST',
+      headers: { 'content-type': 'application/csp-report' },
+      body: JSON.stringify({
+        'csp-report': {
+          'document-uri': 'https://proxy.example/~umbra/d/tok/embed',
+          'violated-directive': 'script-src-elem',
+          'effective-directive': 'script-src-elem',
+          'blocked-uri': 'https://www.youtube-nocookie.com/s/_/ytembeds/_/js/k=x/m=player',
+          'source-file': 'https://proxy.example/~umbra/s/tok',
+          'line-number': 94,
+        },
+      }),
+    });
+    ok('a violation report is accepted without a body', r1.status === 204, 'http ' + r1.status);
+    const log = JSON.parse((await call('/~umbra/csp-log')).text);
+    const e = log.entries[log.entries.length - 1];
+    ok('and it records what was actually refused, not an empty string',
+      e && e.blocked === 'https://www.youtube-nocookie.com/s/_/ytembeds/_/js/k=x/m=player' &&
+      e.directive === 'script-src-elem' && e.line === 94 && /~umbra\/s\/tok/.test(e.source),
+      e ? e.directive + ' ' + e.blocked.slice(0, 48) : 'no entry');
+
+    /* chrome's Reporting API sends a different shape for the same event */
+    await call('/~umbra/csp-report', {
+      method: 'POST',
+      headers: { 'content-type': 'application/reports+json' },
+      body: JSON.stringify([{ type: 'csp-violation', body: {
+        documentURL: 'https://proxy.example/~umbra/d/tok/embed',
+        effectiveDirective: 'connect-src',
+        blockedURL: 'https://www.google.com/log_event',
+      } }]),
+    });
+    const log2 = JSON.parse((await call('/~umbra/csp-log')).text);
+    const e2 = log2.entries[log2.entries.length - 1];
+    ok('the reporting-api shape is read too, not dropped on the floor',
+      e2 && e2.blocked === 'https://www.google.com/log_event' && e2.directive === 'connect-src',
+      e2 ? e2.directive + ' ' + e2.blocked : 'no entry');
+  }
+
   const tubeBad = await call((await mint('umbra://tube/watch?v=short', 'd', tn.tab)).href);
   ok('tube rejects a malformed video id', tubeBad.status === 400, 'http ' + tubeBad.status);
 

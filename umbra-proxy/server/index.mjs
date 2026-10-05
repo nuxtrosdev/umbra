@@ -1086,7 +1086,22 @@ function serveStatic(res, key) {
   const csp = key === '/' ? { 'content-security-policy': CSP_SHELL } : {};
   send(res, 200, { 'content-type': ct, 'cache-control': 'no-cache', 'x-umbra-shell': '1', ...csp }, body);
 }
+/* one line per distinct violation, not one per occurrence: a page that
+   retries a blocked fetch in a loop must not drown the log */
+const CSP_SEEN = new Set();
+const LOST = [];
+export function lostPaths() { return LOST.slice(); }
+
 function notFound(res, url) {
+  /* A wire path that matches no route is usually a reference some script
+     built by string surgery on a url Umbra had already rewritten. The page
+     sees a 404 and fails later, somewhere unrelated, so name it here. */
+  if (String(url).startsWith(PFX)) {
+    const at = { at: Date.now(), path: String(url).slice(0, 300) };
+    LOST.push(at);
+    if (LOST.length > 48) LOST.shift();
+    console.log('umbra: nothing routes to ' + at.path);
+  }
   send(res, 404, { 'content-type': 'text/html; charset=utf-8' }, `<!doctype html><meta charset=utf-8><title>umbra · 404</title>
 <body style="background:#0c1016;color:#dfe6f1;font:15px ui-sans-serif,system-ui;padding:44px;max-width:640px;margin:auto">
 <div style="font:10px/1 ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase;color:#8fd6c8">umbra/1 · no route</div>
@@ -1248,14 +1263,48 @@ async function route(req, res) {
      the browser posts here whenever a document inside Umbra tries to touch a
      real host directly and its own policy refuses. A non-empty count means a
      rewrite vector we have not covered exists — it is a self-audit channel. */
+  /* A refused subresource is invisible to the page that needed it — the
+     browser drops it and the script that depended on it fails somewhere
+     else entirely, which is how a blocked module load surfaces as an
+     unrelated crash deep in a minified bundle. The report says exactly what
+     was refused, so read it properly and say so out loud.
+     The field names here are the spec's (`blocked-uri`, not `blocked-url`):
+     the old pair matched nothing, so every entry recorded an empty string.
+     Both the report-uri shape and the Reporting API shape are accepted. */
   if (head === 'csp-report') {
     let rep = {};
     try { rep = JSON.parse((await readReq(req)).toString('utf8') || '{}'); } catch { rep = {}; }
-    const r = rep['csp-report'] || rep;
-    s.csp = (s.csp || 0) + 1;
-    s.cspLog = (s.cspLog || []).slice(-24);
-    s.cspLog.push({ at: Date.now(), blocked: r['blocked-url'] || r['violated-url'] || '', doc: (r['document-uri'] || '').slice(0, 120), directive: r['violated-directive'] || '' });
+    for (const one of (Array.isArray(rep) ? rep : [rep])) {
+      const r = one['csp-report'] || one.body || one;
+      const entry = {
+        at: Date.now(),
+        blocked: String(r['blocked-uri'] ?? r.blockedURL ?? r['blocked-url'] ?? '').slice(0, 300),
+        doc: String(r['document-uri'] ?? r.documentURL ?? '').slice(0, 200),
+        directive: String(r['effective-directive'] ?? r.effectiveDirective ??
+          r['violated-directive'] ?? r.violatedDirective ?? '').slice(0, 60),
+        source: String(r['source-file'] ?? r.sourceFile ?? '').slice(0, 200),
+        line: Number(r['line-number'] ?? r.lineNumber ?? 0) || 0,
+      };
+      s.csp = (s.csp || 0) + 1;
+      s.cspLog = (s.cspLog || []).slice(-47);
+      s.cspLog.push(entry);
+      if (entry.blocked || entry.directive) {
+        const key = entry.directive + ' ' + entry.blocked;
+        if (!CSP_SEEN.has(key)) {
+          CSP_SEEN.add(key);
+          if (CSP_SEEN.size > 200) CSP_SEEN.clear();
+          console.log(`umbra: the browser refused ${entry.directive || 'a request'} → ` +
+            `${entry.blocked || '(inline)'}${entry.source ? ` · from ${entry.source}:${entry.line}` : ''}`);
+        }
+      }
+    }
     return send(res, 204, {}, null);
+  }
+
+  /* what this session was refused, newest last */
+  if (head === 'csp-log') {
+    return json(res, { count: s.csp || 0, entries: s.cspLog || [] }, 200,
+      metaHeaders({ kind: 'csp-log', n: (s.cspLog || []).length }));
   }
 
   /* ---- mint ---- */
