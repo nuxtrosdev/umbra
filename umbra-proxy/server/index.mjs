@@ -1553,6 +1553,22 @@ server.on('upgrade', (req, socket) => {
     socket.destroy();
   }
 });
+/* A busy port is the most common way this server fails to start, and a raw
+   net stack trace says nothing about what to do next. Name the likely cause
+   (a previous run still holding the port) and the two ways out. */
+server.on('error', (e) => {
+  if (e && e.code === 'EADDRINUSE') {
+    console.error(`umbra: port ${PORT} is already taken — most likely an earlier umbra still running.`);
+    console.error(`  find it:  lsof -ti tcp:${PORT}     (or: ss -lntp | grep ${PORT})`);
+    console.error(`  stop it:  kill $(lsof -ti tcp:${PORT})   ·  or pkill -f umbra-proxy/server/index.mjs`);
+    console.error(`  or move:  PORT=${PORT + 1} npm start`);
+  } else if (e && e.code === 'EACCES') {
+    console.error(`umbra: not allowed to bind ${HOST}:${PORT} — ports under 1024 need privileges. Try PORT=4173.`);
+  } else {
+    console.error('umbra: listen failed:', (e && e.stack) || e);
+  }
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
   console.log(`umbra/1 origin listening on http://${HOST}:${PORT}  ·  shell at /  ·  wire at ${PFX}<mode>/<token>`);
   console.log(`  modes: ${[...MODES].join(' ')}   session store: memory   egress UA: ${UA.slice(0, 38)}…`);
