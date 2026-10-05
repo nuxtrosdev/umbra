@@ -107,7 +107,10 @@ function rewriteValue(name, value, baseAbs, ctx, mode, tag) {
   }
   const abs = resolveRef(value, baseAbs);
   if (!abs) return null;
-  return href(ctx, abs, mode);
+  /* A navigable reference creates a new document context. Put that child's
+     logical address in its token now, rather than making the child inherit
+     the parent document's umbra:// host when it later loads an iframe. */
+  return href(ctx, abs, mode, mode === 'd' ? toUmbra(abs) : '');
 }
 
 /**
@@ -298,11 +301,23 @@ export function rewriteHtml(html, o) {
           try { const abs = resolveRef(value, base); if (abs) logicalFor = toUmbra(abs); } catch {}
         }
         if (next === null) {
+          const v = value.trim();
+          /* A custom umbra:// form action is handled by the shim, but browsers
+             classify that custom scheme as an insecure target when the parent
+             document was loaded over HTTPS. Keep the logical action in a data
+             attribute and give the parser a harmless same-origin placeholder;
+             the submit listener reads data-umbra-action before action. */
+          if ((name === 'action' && tag === 'form') ||
+              (name === 'formaction' && (tag === 'button' || tag === 'input'))) {
+            if (/^umbra:\/\//i.test(v)) {
+              const logical = v.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+              return `${name}="#" data-umbra-action="${logical}"`;
+            }
+          }
           /* data:/blob:/about: never touch the network, so they are left
              exactly as authored: inerting them breaks inline icons for no
              cloaking gain. Schemes that *do* leave the browser (or hand control
              to another program) are neutralised. */
-          const v = value.trim();
           if (/^(javascript|vbscript|mailto|tel|sms|intent|file|geo|whatsapp|tg|magnet|slack|zoomus|obsidian|web\+sms)/i.test(v)) {
             if (name === 'href' || name === 'xlink:href') return `${name}="umbra:inert"`;
             if (name === 'src' || name === 'data' || name === 'action' || name === 'formaction') return `${name}="about:blank"`;

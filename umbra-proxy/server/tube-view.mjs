@@ -17,6 +17,15 @@ import { toPlayerPayload } from './piped.mjs';
 
 const wireImg = (ctx, u) => (u ? href(ctx, u, 's') : null);
 const best = (list) => (Array.isArray(list) && list.length ? list[0].url : '');
+const thumb = (u, id) => {
+  const fallback = id ? 'https://i.ytimg.com/vi/' + id + '/hqdefault.jpg' : '';
+  if (!u) return fallback;
+  try {
+    const x = new URL(u);
+    if (x.searchParams.get('host') === 'i.ytimg.com' || /(^|\.)proxy\.piped\./i.test(x.hostname)) return fallback;
+  } catch {}
+  return u;
+};
 
 /** Normalized Video → video card. */
 export function toCard(v, ctx) {
@@ -31,7 +40,7 @@ export function toCard(v, ctx) {
     uploaded: v.publishedText || '',
     desc: v.description || '',
     isShort: !!v.short,
-    thumbWire: wireImg(ctx, best(v.thumbnails)),
+    thumbWire: wireImg(ctx, thumb(best(v.thumbnails), v.id)),
     avatarWire: wireImg(ctx, v.author && v.author.avatar),
   };
 }
@@ -127,7 +136,8 @@ export function toWatchPayload({ streams, video, related }, ctx, videoId) {
     likes: (v.metadata && v.metadata.likeCount) || 0,
     duration: s.duration || v.duration || 0,
     livestream: !!s.live,
-    thumbnailUrl: best(v.thumbnails),
+    thumbnailUrl: thumb(best(v.thumbnails), videoId),
+    proxyUrl: s.proxyUrl || null,
     hls: s.hls || null,
     dash: s.dash || null,
     videoStreams: s.videoStreams || [],

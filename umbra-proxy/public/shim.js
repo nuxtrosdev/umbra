@@ -402,7 +402,9 @@
       if (!f || !f.tagName || f.tagName !== 'FORM') return;
       var submitter = null;
       try { submitter = ev.submitter || null; } catch (e0) { submitter = null; }
-      var fa = (submitter && submitter.getAttribute && submitter.getAttribute('formaction')) || f.getAttribute('action');
+      var fa = (submitter && submitter.getAttribute && submitter.getAttribute('formaction')) ||
+        (submitter && submitter.getAttribute && submitter.getAttribute('data-umbra-action')) ||
+        f.getAttribute('data-umbra-action') || f.getAttribute('action');
       if (fa && fa.indexOf('umbra://') === 0) {
         /* a umbra-native action (the portal search box) resolves through the shell */
         ev.preventDefault();

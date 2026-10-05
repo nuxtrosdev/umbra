@@ -442,6 +442,18 @@ async function unit() {
   const PL = await import('../server/piped-local.mjs');
   const PP = await import('../server/piped.mjs');
 
+  const proxyPayload = PP.toPlayerPayload({
+    id: VID,
+    proxyUrl: 'https://proxy.piped.example',
+    thumbnailUrl: 'https://proxy.piped.example/vi/' + VID + '/hq720.jpg?host=i.ytimg.com',
+    videoStreams: [{ url: 'https://rr3---sn.googlevideo.com/videoplayback?itag=137', videoOnly: true, mimeType: 'video/mp4', height: 720 }],
+    audioStreams: [],
+  }, { tabId: 'Tproxy', session: 'Sproxy', gen: 'Gproxy' }, VID, 'piped');
+  ok('Piped media uses the instance proxy instead of extractor-bound googlevideo',
+    proxyPayload.video[0].url === 'https://proxy.piped.example/videoplayback?itag=137');
+  ok('Piped proxy thumbnails fall back to canonical YouTube image URLs',
+    proxyPayload.thumb === 'https://i.ytimg.com/vi/' + VID + '/hqdefault.jpg');
+
   ok('the default pool leads with the local instance',
     PP.INSTANCES[0] === PP.LOCAL && PP.INSTANCES.length > 1, PP.INSTANCES.slice(0, 3).join(','));
   ok('innertube text nodes read as plain strings',

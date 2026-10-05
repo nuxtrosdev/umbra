@@ -176,6 +176,7 @@ export async function getStreams(videoId) {
       })),
       hls: j.hls,
       dash: j.dash,
+      proxyUrl: j.proxyUrl,
     }, { provider: id, instance: inst });
     if (!s) throw new Error('stream payload failed validation');
     return s;

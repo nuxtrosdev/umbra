@@ -87,7 +87,7 @@
         /* YouTube's embedded player refuses with error 153 when it cannot see
            a Referer, so send the origin (and only the origin) with the frame. */
         referrerpolicy: 'strict-origin-when-cross-origin',
-        allowfullscreen: '', loading: 'lazy',
+        loading: 'lazy',
         style: 'width:100%;aspect-ratio:16/9;border:0;display:block;background:#000',
       });
       stage.appendChild(f);

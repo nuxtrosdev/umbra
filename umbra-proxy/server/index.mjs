@@ -454,6 +454,22 @@ async function serve(ctx, req, res, opts = {}) {
       try { headers.referer = new URL(ctx.referrer || url).origin + '/'; } catch {}
     }
     if (mode === 's') headers.referer = headers.referer || (() => { try { return new URL(url).origin + '/'; } catch { return undefined; } })();
+    /* Direct googlevideo URLs returned by InnerTube are signed for a player
+       request, not for an arbitrary origin. Sending the proxy's own
+       googlevideo Referer (which the generic fallback above does) is enough
+       to turn an otherwise valid track into a 403. Match the embed player for
+       media requests; Piped streams are rewritten to their instance proxy
+       when one is supplied by the provider. */
+    if (mode === 'm') {
+      try {
+        const host = new URL(url).hostname;
+        if (/(^|\.)googlevideo\.com$/i.test(host)) {
+          headers.referer = 'https://www.youtube.com/';
+          headers.origin = 'https://www.youtube.com';
+          headers['sec-fetch-site'] = 'cross-site';
+        }
+      } catch {}
+    }
     if (opts.range) headers.range = opts.range;
     if (upBody) {
       headers['content-type'] = upCt || 'application/x-www-form-urlencoded';
@@ -1488,6 +1504,11 @@ async function route(req, res) {
       try { abs = new URL(decodeURIComponent(echo) + (u.search || ''), raw.replace(/[^/]*$/, '')).href; } catch {}
     }
     const ctx = mkCtx(abs, mode, tabId);
+    /* Runtime-created iframes use the mint route instead of a pre-signed
+       document href. A mode-d mint is still a document boundary, so anchor it
+       to its own upstream address just like a static d token; otherwise an
+       embed created by a proxied watch page can inherit umbra://tube/watch. */
+    if (mode === 'd') ctx.logicalUrl = toUmbra(abs);
     ctx.referrer = /^https?:/.test(t.url || '') ? t.url : null;
     const popts = { mode, range: req.headers.range || null };
     if (req.method && !/^(GET|HEAD)$/i.test(req.method)) {

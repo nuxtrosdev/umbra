@@ -224,6 +224,34 @@ export function normItem(it, ctx) {
  * existing Umbra player capsule already consumes, so playback, quality
  * switching, dual-track sync and captions all work unchanged.
  */
+function mediaThroughProxy(raw, proxy) {
+  if (!raw || !proxy) return raw;
+  try {
+    const u = new URL(raw);
+    const p = new URL(proxy);
+    if (!/^https?:$/.test(p.protocol) || !/^https?:$/.test(u.protocol)) return raw;
+    /* Piped's proxy exposes the same /videoplayback path and query, but makes
+       the Google request from the instance that minted the signed URL. */
+    if (u.hostname === p.hostname) return raw;
+    return p.origin + u.pathname + u.search;
+  } catch {
+    return raw;
+  }
+}
+
+function canonicalThumb(raw, videoId) {
+  const fallback = videoId ? 'https://i.ytimg.com/vi/' + videoId + '/hqdefault.jpg' : '';
+  if (!raw) return fallback;
+  try {
+    const u = new URL(raw);
+    /* A dead/benched Piped proxy is not a useful thumbnail source. The
+       canonical YouTube thumbnail is still fetched through Umbra's image
+       wire, so this does not expose a browser-side request. */
+    if (u.searchParams.get('host') === 'i.ytimg.com' || /(^|\.)proxy\.piped\./i.test(u.hostname)) return fallback;
+  } catch {}
+  return raw;
+}
+
 export function toPlayerPayload(s, ctx, videoId, instance) {
   const wire = (f) => ({ ...f, wire: href(ctx, f.url, 'm') });
 
@@ -231,7 +259,7 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
     kind,
     itag: st.itag || 0,
     mime: st.mimeType || '',
-    url: st.url,
+    url: mediaThroughProxy(st.url, s.proxyUrl),
     label: st.quality || '',
     quality: st.quality || '',
     fps: num(st.fps),
@@ -270,7 +298,7 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
       };
     });
 
-  const thumb = s.thumbnailUrl || '';
+  const thumb = canonicalThumb(s.thumbnailUrl, videoId);
   const ok = !!(muxed.length || video.length);
 
   return {

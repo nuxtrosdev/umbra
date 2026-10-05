@@ -236,6 +236,9 @@ export function streamInfo(s = {}, { provider, instance } = {}) {
     title: str(s.title, 500),
     duration: duration(s.duration),
     live: s.live === true,
+    /* Piped's proxy is important: its direct googlevideo URLs can be bound
+       to the extractor's egress IP and return 403 when Umbra fetches them. */
+    proxyUrl: url(s.proxyUrl) || null,
     videoStreams: keep(s.videoStreams),
     audioStreams: keep(s.audioStreams),
     subtitles: (Array.isArray(s.subtitles) ? s.subtitles : []).map((c) => {
