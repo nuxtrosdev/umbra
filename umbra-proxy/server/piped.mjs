@@ -355,9 +355,9 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
        override for the same reason every other YouTube call does — a test
        that cannot reach the surface cannot prove it works. */
     embedDoc: href(ctx, NOCOOKIE_BASE() + '/embed/' + videoId, 'd'),
-    /* Read at call time, not at import time, so the suite can toggle it per
-       request. Present unless the operator switched it off. */
-    directEmbed: !/^(0|false|no|off)$/i.test(process.env.UMBRA_DIRECT_EMBED || '')
+    /* Only present when the operator turned it on. Read at call time, not at
+       import time, so the test suite can set it per request. */
+    directEmbed: /^(1|true|yes|on)$/i.test(process.env.UMBRA_DIRECT_EMBED || '')
       ? 'https://www.youtube-nocookie.com/embed/' + videoId + '?rel=0&modestbranding=1'
       : null,
     watchDoc: href(ctx, YT_WATCH_BASE() + '/watch?v=' + videoId, 'd'),

@@ -129,16 +129,14 @@ const metaHeaders = (meta) => ({ 'x-umbra-meta': encodeMeta(meta) });
  * directly, the browser refuses the request instead of sending it. Rewriting
  * makes Umbra work; this makes leaking impossible.
  */
-/* The player of last resort, and — on a datacentre address — the only one
-   that actually plays. A YouTube embed loaded straight from Google by the
-   visitor's own browser never has to defeat BotGuard, because the browser IS
-   a legitimate client: residential address, real cookies, real attestation.
-   The cost is real and stated plainly wherever it appears: Google sees the
-   visitor instead of this origin. It is on by default because a proxy that
-   will not play the video is not protecting anyone, and UMBRA_DIRECT_EMBED=0
-   turns it off for deployments where the boundary is the whole point. It
-   widens nothing but frame-src, for two hosts. */
-export const DIRECT_EMBED = !/^(0|false|no|off)$/i.test(process.env.UMBRA_DIRECT_EMBED || '');
+/* The one deliberate hole, and it is off unless asked for. A YouTube embed
+   loaded straight from Google by the visitor's own browser is the only player
+   that never has to defeat BotGuard — the browser IS a legitimate client:
+   residential address, real cookies, real attestation. It is also the one
+   thing that breaks Umbra's boundary, because Google then sees the visitor
+   instead of this origin. So it is an explicit choice, never a default, and
+   it widens nothing but frame-src for two hosts. */
+export const DIRECT_EMBED = /^(1|true|yes|on)$/i.test(process.env.UMBRA_DIRECT_EMBED || '');
 const DIRECT_HOSTS = 'https://www.youtube-nocookie.com https://www.youtube.com';
 const CSP_DOC = [
   "default-src 'self'",
