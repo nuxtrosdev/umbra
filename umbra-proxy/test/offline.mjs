@@ -331,6 +331,7 @@ async function unit() {
 
   /* ---- proof-of-origin tokens ---- */
   const PT = await import('../server/potoken.mjs');
+  const IT = await import('../server/innertube.mjs');
   PT.resetPoTokenCache();
   delete process.env.UMBRA_YT_POTOKEN;
   delete process.env.UMBRA_POT_PROVIDER_URL;
@@ -380,6 +381,53 @@ async function unit() {
   delete process.env.UMBRA_POT_PROVIDER_URL;
   PT.resetPoTokenCache();
   await new Promise((r) => potSrv.close(r));
+
+  /* The fourth source, and the only free one: the token the visitor's own
+     browser minted inside a proxied YouTube document. Every proxy that plays
+     YouTube from a server works this way — BotGuard runs in a real browser,
+     and the proof travels with the request. Ours travel through us. */
+  PT.resetPoTokenCache();
+  PT.resetHarvest();
+  const BG = 'MnRfTm9tR2VudWluZUJvdEd1YXJkVG9rZW5fb2Zfc3VmZmljaWVudF9sZW5ndGg9PQ';
+  const bgVisitor = IT.synthesizeVisitorData();
+  const pageBody = Buffer.from(JSON.stringify({
+    context: { client: { clientName: 'WEB_EMBEDDED_PLAYER', clientVersion: '1.20260101.00.00', visitorData: bgVisitor } },
+    videoId: VID,
+    serviceIntegrityDimensions: { poToken: BG },
+  }));
+  const seenId = IT.readInnertubeIdentity(pageBody);
+  ok('an in-flight player request gives up its identity without being changed',
+    seenId.poToken === BG && seenId.visitorData === bgVisitor && seenId.videoId === VID,
+    seenId.clientName);
+  ok('a request that already carries a proof is forwarded verbatim',
+    IT.rewriteInnertubeBody(pageBody, { client: 'tv', visitorData: 'ours' }) === null);
+  /* …while one without a token is still re-identified as before */
+  const plainBody = Buffer.from(JSON.stringify({ context: { client: { clientName: 'WEB' } }, videoId: VID }));
+  ok('a request with no proof is still re-identified by the ladder',
+    IT.rewriteInnertubeBody(plainBody, { client: 'tv', visitorData: 'ours' }) !== null);
+
+  PT.observe(seenId);
+  ok('the harvested token is served back for the identity it was bound to',
+    (await PT.getPoToken(bgVisitor)) === BG && PT.inspect().sources.harvested.seen === 1,
+    JSON.stringify(PT.inspect().sources.harvested));
+  ok('and never for a different identity, which would read as forgery',
+    (await PT.getPoToken('some-other-visitor')) === '');
+  ok('the ladder adopts the whole pair, identity included',
+    (await IT.getVisitorData({ force: true })).value === bgVisitor &&
+    (await IT.getVisitorData({})).source === 'browser-botguard',
+    (await IT.getVisitorData({})).source);
+  ok('a harvested token counts as a configured source for diagnostics',
+    PT.inspect().configured === true && PT.inspect().advice === null);
+  /* Junk on the wire must not poison the identity: anything that is not
+     token-shaped is ignored rather than stored. */
+  PT.resetHarvest();
+  ok('a short or malformed value is not mistaken for a token',
+    PT.observe({ poToken: 'x', visitorData: bgVisitor }) === null &&
+    PT.observe({ poToken: '{"not":"a token"}', visitorData: bgVisitor }) === null &&
+    PT.harvestedIdentity() === null);
+  PT.resetHarvest();
+  PT.resetPoTokenCache();
+  IT.resetVisitorCache();
 
   /* ---- signature + n deciphering ---- */
   const DC = await import('../server/decipher.mjs');
@@ -572,7 +620,6 @@ async function unit() {
     PL.videoItems({ x: { videoRenderer: { videoId: 'BBBBBBBBBBB' } }, y: { compactVideoRenderer: { videoId: 'BBBBBBBBBBB' } } }).length === 1);
 
   /* ---- innertube: client identities + visitor session ---- */
-  const IT = await import('../server/innertube.mjs');
 
   const realVisitor = Buffer.concat([
     Buffer.from([0x0a, 0x0b]), Buffer.from('AbCdEfGhIjK', 'ascii'), Buffer.from([0x28, 0xd0, 0x0f]),
@@ -910,6 +957,51 @@ async function wire() {
   ok('each client sends its own matching user-agent',
     itHits[0].ua !== itHits[1].ua && /Chrome/.test(itHits[0].ua) && /Safari/.test(itHits[1].ua));
 
+  /* ---- proof of origin, harvested from the visitor's own browser ----
+     This is the whole mechanism by which a proxy on a datacentre address
+     plays YouTube at all: BotGuard runs in the visitor's real browser inside
+     the proxied embed, and the player request it mints carries a genuine
+     token bound to that page's visitor identity. It passes through Umbra by
+     construction, so Umbra keeps it and the server-side ladder stops asking
+     to be trusted on its word alone. Driven here over the real wire. */
+  {
+    const ITW = await import('../server/innertube.mjs');
+    const pageVisitor = ITW.synthesizeVisitorData();
+    const BGTOK = 'MnQ' + 'x'.repeat(60) + '=';
+    const before = (await (await fetch(`${MOCK}/__hits`)).json())
+      .filter((h) => h.path === '/youtubei/v1/player').length;
+    const rpc = await mint(MOCK + '/youtubei/v1/player', 'x', tn.tab);
+    const rpcRes = await call(rpc.href, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        context: { client: { clientName: 'WEB_EMBEDDED_PLAYER', clientVersion: '1.20260101.00.00', visitorData: pageVisitor } },
+        videoId: VID,
+        serviceIntegrityDimensions: { poToken: BGTOK },
+      }),
+    });
+    const afterPost = (await (await fetch(`${MOCK}/__hits`)).json())
+      .filter((h) => h.path === '/youtubei/v1/player');
+    const page = afterPost[afterPost.length - 1];
+    ok('a page-minted player request reaches youtube with its proof intact',
+      rpcRes.status === 200 && page.poToken === BGTOK && page.visitorData === pageVisitor &&
+      page.clientName === 'WEB_EMBEDDED_PLAYER',
+      page.clientName + ' pot=' + String(page.poToken).slice(0, 8) + '…');
+
+    /* and now the server's own extraction, which has no browser of its own */
+    await call(`/~umbra/ytj?v=${VID}&t=${tn.tab}`);
+    const ladder = (await (await fetch(`${MOCK}/__hits`)).json())
+      .filter((h) => h.path === '/youtubei/v1/player').slice(afterPost.length);
+    ok('the server-side ladder then presents the proof the browser earned',
+      ladder.length > 0 && ladder.every((h) => h.poToken === BGTOK && h.visitorData === pageVisitor),
+      ladder.map((h) => h.clientName + '/' + (h.poToken ? 'pot' : 'none')).join(' '));
+    ok('the harvest is reported, not silent',
+      /harvested/.test(JSON.stringify(JSON.parse((await call('/~umbra/ytj?v=' + VID + '&t=' + tn.tab)).text).poToken || '')) ||
+      JSON.parse((await call('/~umbra/ytj?v=' + VID + '&t=' + tn.tab)).text).poToken === 'attached',
+      JSON.parse((await call('/~umbra/ytj?v=' + VID + '&t=' + tn.tab)).text).poToken);
+    void before;
+  }
+
   const player = await call((await mint(`umbra://player?v=${VID}`, 'c', tn.tab)).href);
   ok('player capsule serves the native-stream payload (mock not gated)',
     player.status === 200 && /umbra player · native stream/.test(player.text) &&
@@ -1030,6 +1122,26 @@ async function wire() {
 
   const tubeBad = await call((await mint('umbra://tube/watch?v=short', 'd', tn.tab)).href);
   ok('tube rejects a malformed video id', tubeBad.status === 400, 'http ' + tubeBad.status);
+
+  /* Every backend refused this one — the state the user's trace was in. A
+     502 error page was the old answer and it is the wrong one: the proxied
+     embed is still a real player, it is the surface most likely to work from
+     a scored address, and it is where the browser mints the proof the native
+     path is missing. Serve the page. */
+  {
+    const dead = await call((await mint('umbra://tube/watch?v=NoStream123', 'd', tn.tab)).href);
+    const info = JSON.parse((/data-info='([^']+)'/.exec(dead.text) || [])[1].replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+    ok('a video no backend can extract still renders a player, not a 502',
+      dead.status === 200 && /id="player"/.test(dead.text) && info.ok === false &&
+      /^\/~umbra\/d\//.test(info.embedDoc || ''),
+      'http ' + dead.status + ' ok=' + info.ok);
+    ok('and it says which backends were tried, and why it is showing the embed',
+      /no playable streams|no .* answered|instance error/i.test(dead.text) &&
+      /proxied embed/.test(dead.text) && (info.tried || []).length > 0,
+      (info.tried || []).map((t) => t.instance).join(','));
+    ok('the embed document it points at is served through the wire',
+      (await call(info.embedDoc)).status === 200);
+  }
   /* The failure the provider work exists for: the local engine is bot-gated
      AND every Piped instance is refusing at once. Before this, Tube died here
      because it only ever spoke to Piped. */
@@ -1289,10 +1401,15 @@ async function wire() {
 
   /* The PO token travels on the player request itself; the mock records what
      it was sent so we can prove the wiring rather than trust it. */
+  /* By now the suite has pushed a browser-minted token through the wire, so
+     the honest answer is "configured, by harvest" and the advice line drops
+     away — advice exists to explain an absence, not to nag. */
   ok('diagnose reports whether a proof-of-origin token was available',
     adiag.j.data.poToken && typeof adiag.j.data.poToken.configured === 'boolean' &&
-    typeof adiag.j.data.poToken.advice === 'string',
-    'configured=' + adiag.j.data.poToken.configured);
+    (adiag.j.data.poToken.configured
+      ? adiag.j.data.poToken.advice === null && !!adiag.j.data.poToken.sources.harvested.seen
+      : typeof adiag.j.data.poToken.advice === 'string'),
+    'configured=' + adiag.j.data.poToken.configured + ' via=' + JSON.stringify(adiag.j.data.poToken.sources.harvested));
 
   const acache = await API('/cache');
   ok('the cache exposes its own statistics',

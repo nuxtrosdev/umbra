@@ -24,10 +24,12 @@ import { inspect as ytInspect, isYouTube, parseVideoId } from './youtube.mjs';
 import {
   isInnertubeUrl,
   rewriteInnertubeBody,
+  readInnertubeIdentity,
   buildHeaders as itHeaders,
   getVisitorData,
   LADDER as IT_LADDER,
 } from './innertube.mjs';
+import * as pot from './potoken.mjs';
 import { portalDoc, labIndexDoc, helpDoc, statsDoc, DOC_CSS } from './docs.mjs';
 import * as piped from './piped.mjs';
 import * as pipedLocal from './piped-local.mjs';
@@ -474,11 +476,20 @@ async function serve(ctx, req, res, opts = {}) {
        and those carry the browser's WEB client identity — the one under the
        full PO-token regime. Rewrite the context in flight so in-page RPCs
        present the same client the inspect ladder settled on, with the same
-       reused visitor identity. Non-InnerTube POSTs are untouched. */
+       reused visitor identity. Non-InnerTube POSTs are untouched.
+
+       The traffic also flows the other way. When YouTube's own JavaScript
+       runs inside a proxied document, BotGuard runs with it and the POST
+       below carries a real proof-of-origin token bound to the page's visitor
+       identity. That pair is exactly what the server-side ladder cannot mint
+       for itself, and it is passing through this function. Keep it. Such a
+       request is then forwarded verbatim — see rewriteInnertubeBody. */
     if (upBody && upMethod === 'POST' && isInnertubeUrl(url)) {
       try {
-        const vis = await getVisitorData({ cookie: headers.cookie || '' });
         const src = Buffer.isBuffer(upBody) ? upBody : Buffer.from(String(upBody));
+        const seen = readInnertubeIdentity(src);
+        if (seen && seen.poToken) pot.observe(seen);
+        const vis = await getVisitorData({ cookie: headers.cookie || '' });
         const rewritten = rewriteInnertubeBody(src, {
           client: IT_LADDER[0],
           visitorData: vis.value,
@@ -1297,20 +1308,32 @@ async function route(req, res) {
       if (!/^[\w-]{11}$/.test(vid)) return fail(res, 400, 'bad video id', vid);
       const ctx = mkCtx('https://tube.umbra/watch?v=' + vid, 'd', tabArg);
       let payload;
-      try {
-        /* streams decide whether the page can exist at all; title/author and
-           the related rail are enrichment, so they are allowed to fail
-           without taking the player down with them */
-        const streams = await pm.getStreams(vid);
-        const [video, related] = await Promise.all([
-          pm.getVideo(vid).catch(() => null),
-          pm.getRecommendations(vid).catch(() => null),
-        ]);
-        payload = withVtt(tubeView.toWatchPayload({ streams, video, related }, ctx, vid), ctx);
-      } catch (e) {
-        return send(res, 502, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'umbra-tube', view: 'watch-error' }) },
-          localDoc(ctx, tubeError('Could not load that video', e, e.tried), ctx.url,
-            '<style>' + DOC_CSS + TUBE_CSS + '</style>', logical('/watch?v=' + vid)));
+      let streamsErr = null;
+      /* Streams used to decide whether the page could exist at all: every
+         backend failing meant a 502 and nothing to watch. But the backends
+         fail together for one reason — they all ask YouTube's API from this
+         address, and a scored address is refused — and that is precisely the
+         case the proxied embed exists for, because there YouTube's own
+         JavaScript runs in the visitor's browser and proves itself. Serving
+         the player with no native formats is not a worse error page; it is
+         the path most likely to play, and the one that earns the PO token
+         the native path needs next time. Title, author and the related rail
+         were always allowed to fail on their own. */
+      let streams = null;
+      try { streams = await pm.getStreams(vid); }
+      catch (e) { streamsErr = e; }
+      const [video, related] = await Promise.all([
+        pm.getVideo(vid).catch(() => null),
+        pm.getRecommendations(vid).catch(() => null),
+      ]);
+      payload = withVtt(tubeView.toWatchPayload({ streams, video, related }, ctx, vid), ctx);
+      if (streamsErr) {
+        payload.ok = false;
+        payload.reason = String(streamsErr.message || streamsErr).slice(0, 200);
+        payload.tried = [
+          ...(streamsErr.tried || []).map((t) => ({ instance: t.provider || t.instance || '?', note: t.note || '' })),
+          ...(payload.tried || []),
+        ];
       }
       /* comments are a nice-to-have: never fail the page over them */
       let cmts = null;

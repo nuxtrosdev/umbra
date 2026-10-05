@@ -149,6 +149,8 @@ const MOCK_VISITOR = mockVisitorData();
 /* Clients the mock treats as PO-token gated: they get a format list with the
    urls stripped, exactly like the real thing does to a datacenter IP. */
 const GATED_CLIENTS = new Set(['WEB', 'ANDROID_VR', 'MWEB', 'WEB_CREATOR']);
+/* the video every backend fails on, from the watch page down */
+const NOSTREAM = 'NoStream123';
 
 /** Every InnerTube POST the mock saw, for assertions in the offline suite. */
 export const hits = [];
@@ -340,6 +342,7 @@ const server = http.createServer((req, res) => {
       publishedText: '3 weeks ago', lengthSeconds: 212, liveNow: false,
     });
     if (rest === 'stats') return J({ version: '2.x', software: { name: 'invidious' } });
+    if (rest === 'videos/' + NOSTREAM) return send(res, 500, { 'content-type': 'text/plain' }, 'instance error');
     if (rest === 'search') {
       if (u.searchParams.get('q') === '__invdown__') return send(res, 503, { 'content-type': 'text/plain' }, 'nope');
       return J([
@@ -400,6 +403,10 @@ const server = http.createServer((req, res) => {
      wire can actually stream the bytes in the offline suite. */
   if (p.startsWith('/streams/')) {
     HITS.push({ path: '/streams', method: req.method, videoId: p.slice(9) });
+    /* One video id that no backend can extract, so the suite can drive the
+       case the whole provider pool exists for and still fails: a scored
+       address being refused by everything at once. */
+    if (p.slice(9) === NOSTREAM) return send(res, 500, { 'content-type': 'text/plain' }, 'instance error');
     return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
       title: 'Mock Piped Video', description: 'piped description line one\nline two',
       uploader: 'Mock Channel', uploaderUrl: '/channel/UCmock', uploaderVerified: true,
@@ -476,6 +483,11 @@ const server = http.createServer((req, res) => {
     /* One id exercises the watch page as an extraction surface. Without a
        consent cookie the real site serves a wall instead of the page, and an
        extractor that does not send one reads that as a block. */
+    if (u.searchParams.get('v') === NOSTREAM) {
+      /* the bot wall, on the surface that is usually the last one standing */
+      return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },
+        '<!doctype html><html><body><div>LOGIN_REQUIRED: Sign in to confirm you\u2019re not a bot</div></body></html>');
+    }
     if (u.searchParams.get('v') === 'EmbedOnly12') {
       /* the exact shape the user hit: watch refused, embed still answering */
       return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },
@@ -730,6 +742,11 @@ const server = http.createServer((req, res) => {
         const only = JSON.parse(JSON.stringify(pr));
         only.streamingData = { expiresInSeconds: '21540', hlsManifestUrl: 'http://127.0.0.1:' + PORT + '/hls/HlsOnly1234.m3u8' };
         return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(only));
+      }
+      /* the all-gated id: every client, every time, urls withheld — which is
+         what a bot-scored address actually gets back */
+      if (body.videoId === NOSTREAM) {
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(stripUrls(pr)));
       }
       /* gated clients get the stripped-url treatment; others get real urls */
       if (GATED_CLIENTS.has(client.clientName)) {

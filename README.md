@@ -184,6 +184,7 @@ format metadata, and what a caller does with those URLs is its own decision.
 | `UMBRA_POT_PROVIDER_URL` | — | A bgutil-style PO token minting service, e.g. `http://127.0.0.1:4416`. |
 | `UMBRA_YT_COOKIES` | — | Cookie header for a signed-in YouTube session. |
 | `UMBRA_POT_TTL` | `21600000` | PO token cache lifetime, ms. |
+| `UMBRA_POT_HARVEST_TTL` | `21600000` | How long a token harvested from a visitor's embed is reused, ms. |
 | `UMBRA_API_PUBLIC` | off | Serve `/api/youtube/*` to callers with no Umbra session. |
 | `UMBRA_PROVIDERS` | `innertube,piped,invidious,poketube,newpipe,youtubejs,ytdlp` | Provider order and membership. |
 | `UMBRA_INVIDIOUS_INSTANCES` | built-in seed list | Invidious instance pool. |
@@ -251,6 +252,42 @@ clients, expects a **proof-of-origin token** minted by its own BotGuard
 JavaScript. A request without one is either refused outright or — more
 confusingly — answered with `200 OK` and every good format withheld. From the
 outside those two outcomes look identical to a broken extractor.
+
+#### The cheapest source is the visitor's own browser
+
+Every proxy that plays YouTube from a server has one thing in common, and it
+is not a better extractor: YouTube's own JavaScript runs in the *visitor's*
+browser. BotGuard executes there, mints a token bound to that page's visitor
+identity, and the player requests carry it. The egress address still belongs
+to the server and YouTube still answers, because a valid proof of origin is
+what the gate is actually asking for.
+
+Umbra already runs YouTube's JavaScript in the visitor's browser — that is
+what the proxied embed is — and every request that page makes passes through
+this origin by construction. So the token is already in hand: the in-page
+`/youtubei/v1/player` POST carries it, bound to the `visitorData` in the same
+body. Umbra records the **pair** and the server-side ladder presents it on its
+own requests afterwards.
+
+Two rules make that safe rather than clever:
+
+- a request that already carries a token is forwarded **verbatim**. Rewriting
+  its identity, which Umbra does to every other in-page RPC, would void the
+  proof and turn the most credible request it ever sees into a forgery;
+- the pair is adopted whole or not at all. A token under a different
+  visitorData is worse than no token.
+
+Nothing is minted and nothing is forged; this is observation. It costs no
+configuration, and `watch` a single video through the embed to prime it.
+`poToken.sources.harvested` on the diagnose endpoint reports what was seen.
+
+#### When extraction fails, the page still plays
+
+A video no backend can extract used to return a 502 error page. It now
+renders the watch page with the proxied embed as the player, because that is
+the surface most likely to work from a scored address — and the one that
+earns the token the native path is missing. The tried-list is still shown;
+the failure is reported, not hidden.
 
 The giveaway is in `GET /api/youtube/diagnose/<videoId>`:
 

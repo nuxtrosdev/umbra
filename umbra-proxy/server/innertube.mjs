@@ -40,6 +40,7 @@
  * stale — every one of them is overridable by env, see LADDER below.
  */
 import { upstream, readBody } from './net.mjs';
+import { harvestedIdentity } from './potoken.mjs';
 
 /* Read at call time, not at import time. A constant captured on first import
    cannot be redirected afterwards, which made the module untestable against a
@@ -308,6 +309,18 @@ function scanForVisitor(text) {
  */
 export async function getVisitorData({ cookie = '', embedHtml = '', force = false } = {}) {
   const now = Date.now();
+  /* If a proxied YouTube document has run BotGuard in the visitor's browser,
+     adopt the identity that token was bound to. It is a genuine Google-issued
+     visitorData, it is in active use from this same egress, and it is the
+     only identity our PO token is valid under. Taking one half of the pair
+     is worse than taking neither. */
+  const proved = harvestedIdentity();
+  if (proved && proved.visitorData && looksLikeVisitorData(proved.visitorData)) {
+    if (visitorCache.value !== proved.visitorData) {
+      visitorCache = { value: proved.visitorData, at: proved.at, source: 'browser-botguard', synthetic: false };
+    }
+    return visitorCache;
+  }
   if (!force && visitorCache.value && now - visitorCache.at < VISITOR_TTL) return visitorCache;
 
   try {
@@ -398,8 +411,15 @@ export function buildHeaders(key, { visitorData = '', videoId = '', cookie = '' 
 export function isInnertubeUrl(url) {
   try {
     const u = new URL(url);
-    return /(^|\.)(youtube\.com|youtube-nocookie\.com|youtubei\.googleapis\.com)$/i.test(u.hostname) &&
-      u.pathname.startsWith('/youtubei/');
+    if (!u.pathname.startsWith('/youtubei/')) return false;
+    if (/(^|\.)(youtube\.com|youtube-nocookie\.com|youtubei\.googleapis\.com)$/i.test(u.hostname)) return true;
+    /* UMBRA_YT_BASE moves the whole YouTube origin somewhere else — a mock in
+       the test suite, a mirror in a deployment. The interception has to move
+       with it, or the surface it exists for is the one surface it misses. */
+    try {
+      const b = new URL(ytBase());
+      return b.host === u.host;
+    } catch { return false; }
   } catch {
     return false;
   }
@@ -411,6 +431,24 @@ export function isInnertubeUrl(url) {
  * Returns null when the body is not InnerTube JSON, so the caller passes it
  * through untouched.
  */
+/**
+ * Read the identity a page-minted InnerTube POST is carrying, without
+ * changing it. Returns null when the body is not InnerTube JSON.
+ */
+export function readInnertubeIdentity(buf) {
+  if (!buf || !buf.length || buf.length > 4 * 1024 * 1024) return null;
+  let j;
+  try { j = JSON.parse(buf.toString('utf8')); } catch { return null; }
+  if (!j || typeof j !== 'object' || Array.isArray(j) || !j.context) return null;
+  const client = (j.context && j.context.client) || {};
+  return {
+    poToken: String((j.serviceIntegrityDimensions || {}).poToken || ''),
+    visitorData: String(client.visitorData || ''),
+    clientName: String(client.clientName || ''),
+    videoId: String(j.videoId || ''),
+  };
+}
+
 export function rewriteInnertubeBody(buf, { client = LADDER[0], visitorData = '' } = {}) {
   if (!buf || !buf.length || buf.length > 4 * 1024 * 1024) return null;
   let j;
@@ -420,6 +458,12 @@ export function rewriteInnertubeBody(buf, { client = LADDER[0], visitorData = ''
     return null;
   }
   if (!j || typeof j !== 'object' || Array.isArray(j) || !j.context) return null;
+  /* A request that already carries a PO token was proved by BotGuard in the
+     visitor's own browser, and the token is bound to the visitorData sitting
+     beside it in this very body. Swapping in our identity would void the
+     proof and turn the most credible request Umbra ever gets into a forgery.
+     Leave it exactly as the page built it. */
+  if ((j.serviceIntegrityDimensions || {}).poToken) return null;
   const ctxObj = buildContext(client, { visitorData });
   j.context = {
     ...j.context,

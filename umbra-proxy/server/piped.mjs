@@ -199,6 +199,11 @@ export function channelIdOf(u) {
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
+/* UMBRA_YT_BASE moves the YouTube origin (the offline suite points it at a
+   mock). The embed and watch documents are YouTube requests like any other. */
+const YT_WATCH_BASE = () => (process.env.UMBRA_YT_BASE || 'https://www.youtube.com').replace(/\/$/, '');
+const NOCOOKIE_BASE = () => (process.env.UMBRA_YT_BASE || 'https://www.youtube-nocookie.com').replace(/\/$/, '');
+
 /**
  * Point an image back at the host that actually owns it.
  *
@@ -345,8 +350,12 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
       .slice(0, 12)
       .map((r) => normItem(r, ctx)),
     /* the capsule links back out to the native path for comparison */
-    embedDoc: href(ctx, 'https://www.youtube-nocookie.com/embed/' + videoId, 'd'),
-    watchDoc: href(ctx, 'https://www.youtube.com/watch?v=' + videoId, 'd'),
+    /* The embed is a real fallback, not a link: when extraction yields
+       nothing this is what the page plays. It honours the YouTube base
+       override for the same reason every other YouTube call does — a test
+       that cannot reach the surface cannot prove it works. */
+    embedDoc: href(ctx, NOCOOKIE_BASE() + '/embed/' + videoId, 'd'),
+    watchDoc: href(ctx, YT_WATCH_BASE() + '/watch?v=' + videoId, 'd'),
   };
 }
 

@@ -150,7 +150,12 @@ export function watchDoc(p, info, cmts) {
     ? `<div class="tbar"><span class="chip">${p.muxed.length} muxed</span><span class="chip">${p.video.length} video</span>
        <span class="chip">${p.audio.length} audio</span><span class="chip">${p.captions.length} caption track(s)</span>
        ${p.isLive ? '<span class="chip warn">live</span>' : ''}</div>`
-    : `<p class="warn">${esc(p.reason || 'no playable streams')} — try another instance, or the native player.</p>`}
+    : `<p class="warn">${esc(p.reason || 'no playable streams')}</p>
+       <p class="muted">No backend could extract this one, so the player below is the proxied embed:
+       YouTube's own code, running in your browser, inside Umbra. Your browser still never talks to
+       Google — every byte is fetched by this origin — and the proof of origin that player mints is
+       kept and reused on the native path, which is the thing a datacentre address cannot produce
+       on its own.</p>`}
   <div id="player" data-info='${info}'></div>
   ${p.desc ? `<h2>Description</h2><div class="tdesc">${esc(p.desc)}</div>` : ''}
   ${cmts && cmts.items && cmts.items.length

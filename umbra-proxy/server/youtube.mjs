@@ -29,6 +29,7 @@ import {
   getVisitorData,
   playerRequest,
 } from './innertube.mjs';
+import { getPoToken } from './potoken.mjs';
 
 const YT_HOSTS = new Set([
   'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com',
@@ -211,6 +212,11 @@ export async function inspect(url, ctx) {
     embedHtml: html,
   });
   const visitor = visitorRec.value;
+  /* The ladder used to walk every client without ever attaching a proof of
+     origin, which on a scored address is the difference between formats and
+     an empty streamingData. Whatever source has one — a harvested browser
+     token, the env var, a provider — it belongs on these requests. */
+  const poToken = await getPoToken(visitor);
 
   /* --- client ladder ------------------------------------------------------
      Walk the configured identities until one hands back formats with real
@@ -227,6 +233,7 @@ export async function inspect(url, ctx) {
           visitorData: visitor,
           cookie: ctx.cookieJar.header(embedUrl),
           apiKey: key,
+          poToken,
         });
         const status = ((j || {}).playabilityStatus || {}).status || 'UNKNOWN';
         if (j && hasUsableStreams(j)) {
@@ -340,12 +347,15 @@ export async function inspect(url, ctx) {
     ciphered,
     visitorSource: visitorRec.source,
     visitorSynthetic: !!visitorRec.synthetic,
+    /* "no playable streams" has two very different causes; say which one
+       applied so the reader is not left guessing */
+    poToken: poToken ? 'attached' : 'none',
     muxed: muxed.slice(0, 8).map(withWire(ctx)),
     video: vids.slice(0, 8).map(withWire(ctx)),
     audio: auds.slice(0, 2).map(withWire(ctx)),
     captions: capTracks,
-    embedDoc: href(ctx, 'https://www.youtube.com/embed/' + videoId + '?enablejsapi=1&rel=0&modestbranding=1', 'd'),
-    watchDoc: href(ctx, 'https://www.youtube.com/watch?v=' + videoId, 'd'),
+    embedDoc: href(ctx, YT_BASE + '/embed/' + videoId + '?enablejsapi=1&rel=0&modestbranding=1', 'd'),
+    watchDoc: href(ctx, YT_BASE + '/watch?v=' + videoId, 'd'),
     expires: Number(sd.expiresInSeconds || 0),
   };
 }
