@@ -743,6 +743,17 @@ const server = http.createServer((req, res) => {
         only.streamingData = { expiresInSeconds: '21540', hlsManifestUrl: 'http://127.0.0.1:' + PORT + '/hls/HlsOnly1234.m3u8' };
         return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(only));
       }
+      /* the wall itself: the answer a scored address gets when YouTube does
+         not even pretend to have the video */
+      if (body.videoId === 'BotWall1234') {
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+          playabilityStatus: {
+            status: 'LOGIN_REQUIRED',
+            reason: 'Sign in to confirm you\u2019re not a bot',
+          },
+          videoDetails: { videoId: 'BotWall1234' },
+        }));
+      }
       /* the all-gated id: every client, every time, urls withheld — which is
          what a bot-scored address actually gets back */
       if (body.videoId === NOSTREAM) {

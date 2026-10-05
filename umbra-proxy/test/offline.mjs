@@ -1156,6 +1156,44 @@ async function wire() {
       /harvested/.test(JSON.stringify(JSON.parse((await call('/~umbra/ytj?v=' + VID + '&t=' + tn.tab)).text).poToken || '')) ||
       JSON.parse((await call('/~umbra/ytj?v=' + VID + '&t=' + tn.tab)).text).poToken === 'attached',
       JSON.parse((await call('/~umbra/ytj?v=' + VID + '&t=' + tn.tab)).text).poToken);
+
+    /* ---- the black rectangle, explained ----
+       When the embed's player request comes back refused, the frame cannot
+       say so across the document boundary and the operator is left looking
+       at nothing. The answer passed through this origin, so Umbra reads it
+       and the page can ask what it said. */
+    {
+      const wall = await mint(MOCK + '/youtubei/v1/player', 'x', tn.tab);
+      const body = JSON.stringify({
+        context: { client: { clientName: 'WEB_EMBEDDED_PLAYER', clientVersion: '1.20260101.00.00' } },
+        videoId: 'BotWall1234',
+      });
+      const r = await call(wall.href, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+      ok('the refusal reaches the embed unchanged — umbra reads, never edits',
+        r.status === 200 && JSON.parse(r.text).playabilityStatus.status === 'LOGIN_REQUIRED',
+        'http ' + r.status);
+      const v = await call('/~umbra/ytverdict?v=BotWall1234');
+      const j = JSON.parse(v.text);
+      ok('and the page can find out why its player is black',
+        j.seen === true && j.status === 'LOGIN_REQUIRED' && j.verdict === 'refused' &&
+        /not a bot/i.test(j.reason) && j.withUrl === 0,
+        j.status + ' / ' + j.verdict + ' / ' + j.reason);
+      const gated = await mint(MOCK + '/youtubei/v1/player', 'x', tn.tab);
+      await call(gated.href, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          context: { client: { clientName: 'WEB', clientVersion: '2.20260101.00.00' } },
+          videoId: VID,
+        }),
+      });
+      const g = JSON.parse((await call('/~umbra/ytverdict?v=' + VID)).text);
+      ok('a withheld-url answer is told apart from an outright refusal',
+        g.seen === true && g.status === 'OK' && g.verdict === 'gated' && g.withUrl === 0 && g.formats > 0,
+        g.status + ' / ' + g.verdict + ' / ' + g.withUrl + '/' + g.formats);
+      ok('a video nobody has asked about reports nothing rather than guessing',
+        JSON.parse((await call('/~umbra/ytverdict?v=Unasked1234')).text).seen === false);
+    }
     void before;
   }
 

@@ -323,6 +323,36 @@ the surface most likely to work from a scored address — and the one that
 earns the token the native path is missing. The tried-list is still shown;
 the failure is reported, not hidden.
 
+#### Why is the proxied player black?
+
+A frame cannot report its own failure across a document boundary, so a
+refused embed looks identical to a broken proxy. But YouTube's answer to
+that frame passed through this origin. Umbra reads it — and forwards it
+untouched — so the page can simply ask:
+
+```
+GET /~umbra/ytverdict?v=<videoId>
+{ "seen": true, "status": "LOGIN_REQUIRED", "verdict": "refused",
+  "formats": 0, "withUrl": 0, "reason": "Sign in to confirm you're not a bot" }
+```
+
+Three verdicts, three different conclusions:
+
+- **`refused`** — `status` is not OK. The address was named. No amount of
+  extraction work fixes this; the direct embed is the answer.
+- **`gated`** — `OK`, formats present, none carrying a URL. This is the case
+  proof-of-origin targets.
+- **`playable`** — URLs came back; if the frame is still black the fault is
+  on our side of the wire.
+
+The player writes the same line into its readout a few seconds after the
+proxied embed mounts, and the server logs it:
+
+```
+umbra: youtube answered the embed for kNeTn59Fymw — LOGIN_REQUIRED
+       (refused, 0/0 formats with urls) · Sign in to confirm you're not a bot
+```
+
 The giveaway is in `GET /api/youtube/diagnose/<videoId>`:
 
 - formats arrive but are **ciphered and unresolved** → a deciphering problem;

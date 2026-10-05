@@ -23,6 +23,9 @@ import { rewriteHtml, rewriteCssUrls, injectShim, decodeHtml } from './html.mjs'
 import { inspect as ytInspect, isYouTube, parseVideoId } from './youtube.mjs';
 import {
   isInnertubeUrl,
+  readPlayability,
+  notePlayability,
+  lastPlayability,
   rewriteInnertubeBody,
   readInnertubeIdentity,
   buildHeaders as itHeaders,
@@ -616,6 +619,22 @@ touching your browser's network stack directly.</p>`;
       localDoc(ctx, body, finalUrl, '<style>' + capsuleCss + '</style>', toUmbra(finalUrl)));
   }
 
+  /* The embed's own player answer is small json, and it is the only place
+     that says why the frame is black. Buffer that one response instead of
+     piping it, read the verdict, forward it untouched. */
+  let peek = null;
+  if (!wantText && upMethod === 'POST' && isInnertubeUrl(finalUrl) && /player(\?|$)/.test(new URL(finalUrl).pathname + '?')) {
+    try {
+      peek = await readBody(up.res, { limit: 8 * 1024 * 1024 });
+      const v = readPlayability(peek);
+      if (v) {
+        notePlayability(v);
+        console.log(`umbra: youtube answered the embed for ${v.videoId || '?'} — ${v.status}` +
+          ` (${v.verdict}, ${v.withUrl}/${v.formats} formats with urls)` + (v.reason ? ` · ${v.reason}` : ''));
+      }
+    } catch { peek = null; }
+  }
+
   if (!wantText) {
     const hdrs = outboundHeaders(up.res, {
       'accept-ranges': h['accept-ranges'] || 'bytes',
@@ -628,6 +647,11 @@ touching your browser's network stack directly.</p>`;
     if (h['content-range']) hdrs['content-range'] = h['content-range'];
     if (h['content-type']) hdrs['content-type'] = h['content-type'];
     if (/text\/html/i.test(String(h['content-type'] || ''))) hdrs['content-security-policy'] = CSP_DOC;
+    if (peek) {
+      /* already drained to read the verdict; the bytes go on unchanged */
+      hdrs['content-length'] = String(peek.length);
+      return send(res, status || 200, hdrs, peek);
+    }
     res.writeHead(status || 200, hdrs);
     up.res.on('error', () => res.destroy());
     up.res.pipe(res);
@@ -1291,6 +1315,18 @@ async function route(req, res) {
       wire: href({ tabId: 'shell', session: s.id, gen: s.gen, url: r.url }, r.url, 'd'),
     }));
     return json(res, out, 200, metaHeaders({ kind: 'search', engine: out.engine, n: out.results.length }));
+  }
+
+  /* ---- what youtube told the embed ----
+     The frame itself cannot tell the page why it is black: it is a
+     cross-document boundary and YouTube's error is inside it. The answer
+     came through this origin, though, so the page can simply ask. */
+  if (head === 'ytverdict') {
+    const vid = String(u.searchParams.get('v') || '').slice(0, 20);
+    if (!/^[\w-]{11}$/.test(vid)) return fail(res, 400, 'bad video id', vid);
+    const v = lastPlayability(vid);
+    return json(res, v ? { seen: true, ...v } : { seen: false, videoId: vid }, 200,
+      metaHeaders({ kind: 'ytverdict', videoId: vid }));
   }
 
   /* ---- youtube inspect ---- */

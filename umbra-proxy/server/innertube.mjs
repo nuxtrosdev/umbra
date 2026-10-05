@@ -533,3 +533,52 @@ export async function playerRequest(videoId, key, { visitorData = '', cookie = '
 export { ytBase, EMBED_HOST };
 /* compatibility: some callers read the value, not the getter */
 export const YT_BASE = ytBase();
+
+/* ------------------------------------------------- playability verdicts ---
+ * A black player is not a diagnosis. When YouTube's own code runs inside a
+ * proxied embed, it asks /youtubei/v1/player and the ANSWER says exactly why
+ * nothing plays: LOGIN_REQUIRED with "Sign in to confirm you're not a bot" is
+ * the wall, UNPLAYABLE is a refusal for some other reason, and an OK status
+ * with no streamingData is the gated case the proof-of-origin work targets.
+ * That answer passes through this origin, so there is no reason to make the
+ * operator guess from an empty rectangle. Keep the last verdict per video.
+ */
+const PLAYABILITY = new Map();
+const PLAYABILITY_MAX = 64;
+
+export function readPlayability(buf) {
+  let j;
+  try { j = JSON.parse(Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf)); } catch { return null; }
+  if (!j || typeof j !== 'object') return null;
+  const ps = j.playabilityStatus || {};
+  const sd = j.streamingData || null;
+  const formats = [...(sd?.formats || []), ...(sd?.adaptiveFormats || [])];
+  const withUrl = formats.filter((f) => f && (f.url || f.signatureCipher || f.cipher)).length;
+  const reason = ps.reason ||
+    ps.errorScreen?.playerErrorMessageRenderer?.reason?.runs?.map((r) => r.text).join('') ||
+    ps.errorScreen?.playerErrorMessageRenderer?.subreason?.runs?.map((r) => r.text).join('') || '';
+  return {
+    videoId: j.videoDetails?.videoId || '',
+    status: ps.status || 'UNKNOWN',
+    reason: String(reason).slice(0, 240),
+    formats: formats.length,
+    withUrl,
+    /* the distinction that matters: refused outright, or answered with the
+       urls withheld. The second is what a proof-of-origin token fixes. */
+    verdict: ps.status && ps.status !== 'OK' ? 'refused' : (withUrl ? 'playable' : 'gated'),
+    at: Date.now(),
+  };
+}
+
+export function notePlayability(v) {
+  if (!v || !v.videoId) return v;
+  PLAYABILITY.set(v.videoId, v);
+  while (PLAYABILITY.size > PLAYABILITY_MAX) PLAYABILITY.delete(PLAYABILITY.keys().next().value);
+  return v;
+}
+
+export function lastPlayability(videoId) {
+  return (videoId && PLAYABILITY.get(videoId)) || null;
+}
+
+export function resetPlayability() { PLAYABILITY.clear(); }

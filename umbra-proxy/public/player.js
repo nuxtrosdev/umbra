@@ -87,6 +87,30 @@
     }, 5000);
   }
 
+  var verdictTimer = null;
+  function askVerdict(delay) {
+    clearTimeout(verdictTimer);
+    verdictTimer = setTimeout(function () {
+      if (state.mode !== 'embed') return;
+      var base = (d.ctx && d.ctx.origin ? '' : '') + '/~umbra/ytverdict?v=' + encodeURIComponent(d.videoId || '');
+      fetch(base, { credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (v) {
+        if (!v || state.mode !== 'embed') return;
+        if (!v.seen) {
+          readout.textContent = 'the embed has not asked YouTube for the video yet — if this stays, '
+            + 'its player code never started. ' + readout.textContent;
+          return;
+        }
+        var line = 'youtube answered the embed: ' + v.status + ' · ' + v.verdict
+          + ' · ' + v.withUrl + '/' + v.formats + ' formats carried urls'
+          + (v.reason ? ' · "' + v.reason + '"' : '');
+        if (v.verdict !== 'playable' && d.directEmbed) {
+          line += ' — this is the address, not the proxy. The direct frame plays.';
+        }
+        readout.textContent = line;
+      }).catch(function () {});
+    }, delay || 3000);
+  }
+
   function mount() {
     stage.innerHTML = '';
     ctl.innerHTML = '';
@@ -128,6 +152,11 @@
       ctl.appendChild(btn('try native stream', '', function () { state.mode = muxed.length ? 'muxed' : (vids.length ? 'dual' : 'embed'); mount(); }));
       if (d.directEmbed) ctl.appendChild(btn('load direct from youtube (leaves umbra)', 'warn', function () { state.mode = 'direct'; mount(); }));
       readout.textContent = d.ok ? 'native available' : 'stream URLs withheld upstream: ' + (d.reason || 'blocked') + ' — the embed document is served through Umbra with X-Frame-Options and CSP removed';
+      /* The frame cannot report its own failure across the document
+         boundary, but YouTube's answer to it came through this origin. Ask,
+         once the player has had time to ask first. A black rectangle becomes
+         a sentence. */
+      askVerdict(3000);
       host.appendChild(stage); host.appendChild(ctl); host.appendChild(readout);
       return;
     }
