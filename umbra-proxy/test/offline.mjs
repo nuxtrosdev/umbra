@@ -507,6 +507,18 @@ async function unit() {
   const vGated = V.verdict([{ provider: 'innertube', note: 'no playable formats and no hls manifest' }], {});
   ok('withheld formats are diagnosed as proof-of-origin, not as a block',
     vGated && vGated.kind === 'gated', vGated && vGated.kind);
+  /* The video is the variable, not the address: when YouTube answers every
+     client with the same refusal, saying "gated, go mint a PO token" sends
+     the operator after a video that no longer exists. */
+  const vGone = V.verdict([
+    { provider: 'innertube', note: 'no playable formats and no hls manifest' },
+    { provider: 'watchpage', note: 'UNPLAYABLE: This live stream recording is not available.' },
+  ], {});
+  ok('a video youtube refuses to everyone is reported as unavailable, not as a gate',
+    vGone && vGone.kind === 'unavailable' && /not available/.test(vGone.headline) &&
+    !/proof-of-origin|POTOKEN/i.test(vGone.detail),
+    JSON.stringify(vGone && vGone.kind) + ' ' + String(vGone && vGone.headline).slice(0, 60));
+
   const vDead = V.verdict([{ provider: 'piped', note: 'connect ECONNREFUSED 127.0.0.1:1' },
     { provider: 'invidious', note: 'getaddrinfo ENOTFOUND nope.invalid' }], {});
   ok('connection failures across the board are diagnosed as having no route out',

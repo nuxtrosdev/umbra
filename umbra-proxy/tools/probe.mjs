@@ -89,9 +89,12 @@ function printRows(rows, w) {
  * machine, the address is fine and the video is the variable: age gate,
  * region, licence, members-only. The local engine already walks every
  * client without short-circuiting, so ask it rather than guess. */
+const whyNotes = [];
 async function why(id) {
   try {
     const d = await local.diagnose(id);
+    for (const c of (d.clients || [])) if (c.reason || c.error) whyNotes.push(String(c.reason || c.error));
+    if (d.diagnosis) whyNotes.push(String(d.diagnosis));
     console.log(`  ${C.b('why')}  ${d.diagnosis || '(no diagnosis)'}`);
     for (const c of (d.clients || []).slice(0, 12)) {
       const st = c.error ? C.r(trunc(c.error, 44))
@@ -131,7 +134,12 @@ if (!rows.some((r) => r.state === 'works')) await why(VID);
 
 /* ------------------------------------------------------------ verdict --- */
 const pot = potInspect();
-const tried = rows.filter((r) => r.state !== 'works').map((r) => ({ provider: r.p, note: r.note }));
+const tried = [
+  ...rows.filter((r) => r.state !== 'works').map((r) => ({ provider: r.p, note: r.note, instances: (r.why || []).map((n) => ({ note: n })) })),
+  /* what the clients themselves said, so the verdict is not inferred from
+     empty counts when YouTube supplied an actual reason */
+  ...whyNotes.map((n) => ({ provider: 'diagnose', note: n })),
+];
 const vd = verdict(tried, { hasPoToken: !!pot.configured, hasCookies: !!process.env.UMBRA_YT_COOKIES });
 const worked = rows.filter((r) => r.state === 'works');
 const gated = rows.filter((r) => r.state === 'gated');

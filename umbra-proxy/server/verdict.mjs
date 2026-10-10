@@ -7,6 +7,8 @@
  * is the difference between a diagnostic and a diagnosis. The distinctions
  * that matter, because each has a different fix:
  *
+ *   - unavailable   — the video itself is gone, private or region-locked.
+ *                     Nothing on our side is broken and nothing fixes it.
  *   - bot wall      — YouTube named us. Nothing in extraction fixes this.
  *   - gated         — a 200 with the formats withheld. Proof-of-origin.
  *   - no route      — this machine cannot reach the internet.
@@ -18,7 +20,12 @@
  */
 
 const BOT = /sign ?in to confirm|not a bot|LOGIN_REQUIRED|CONSENT_WALL|consent wall|confirm you'?re|age.?restrict/i;
-const GATED = /no playable formats|no formats|formats were withheld|empty format|UNPLAYABLE|streamingData/i;
+const GATED = /no playable formats|no formats|formats were withheld|empty format|streamingData/i;
+/* YouTube saying the video is gone is not a diagnosis of us. It outranks
+   everything else, because an unavailable video produces exactly the same
+   empty format lists as a gate — and sending someone off to mint a
+   proof-of-origin token for a deleted livestream wastes their evening. */
+const UNAVAILABLE = /live stream recording is not available|video is unavailable|video unavailable|has been removed|no longer available|private video|members.?only|premieres in|not available in your country|blocked it in your country/i;
 const NOROUTE = /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNRESET|socket hang up|SSL_ERROR|certificate/i;
 const SICK = /http 5\d\d|http 4(?:0[39]|29)|Bad Gateway|Service Unavailable/i;
 
@@ -43,6 +50,19 @@ export function verdict(tried, { hasPoToken = false, hasCookies = false } = {}) 
   if (!notes.length) return null;
   const any = (re) => notes.some((n) => re.test(n));
 
+  if (any(UNAVAILABLE) && !any(BOT)) {
+    const said = notes.find((n) => UNAVAILABLE.test(n)) || '';
+    const quote = (said.match(UNAVAILABLE) || [''])[0];
+    return {
+      kind: 'unavailable',
+      headline: 'YouTube says this video is not available \u2014 to anyone, not just us.',
+      detail: 'Every client was answered, and the answer was ' + JSON.stringify(quote) + '. '
+        + 'That is a statement about the video, not about this address or this proxy: '
+        + 'deleted, private, members-only, region-locked, or an expired livestream '
+        + 'recording. No token, cookie or backend changes it. Try another video to '
+        + 'confirm extraction is healthy.',
+    };
+  }
   if (any(BOT)) {
     const missing = [
       !hasCookies && 'UMBRA_YT_COOKIES (a signed-in session)',

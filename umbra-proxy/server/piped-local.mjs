@@ -530,7 +530,15 @@ export async function diagnose(videoId) {
     clients,
     /* the most common causes, named rather than implied */
     diagnosis: !best
-      ? (clients.every((c) => c.formats === 0)
+      ? (clients.some((c) => c.reason) && clients.every((c) => c.formats === 0) &&
+         clients.filter((c) => c.playability && c.playability !== 'OK').length >= clients.filter((c) => c.playability).length
+        /* YouTube gave a reason, the same one, to every client. Quote it
+           rather than theorising about egress: "this live stream recording
+           is not available" is an answer, not a symptom. */
+        ? 'youtube refuses this video to every client: ' +
+          JSON.stringify((clients.find((c) => c.reason) || {}).reason) +
+          ' — that is about the video, not this address'
+        : clients.every((c) => c.formats === 0)
         ? 'every client returned zero formats — this is an egress-level block or an unavailable video'
         : clients.some((c) => c.ciphered > 0)
           ? 'formats arrived ciphered and the player script could not unscramble them' + (playerError ? ': ' + playerError : '')
