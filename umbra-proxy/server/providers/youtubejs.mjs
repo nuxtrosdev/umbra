@@ -42,6 +42,37 @@ async function client() {
   try {
     const mod = await import('youtubei.js');
     const Innertube = mod.Innertube || mod.default?.Innertube || mod.default;
+
+    /* YouTube.js ships no JavaScript evaluator, and without one every
+       deciphered URL throws: "you must provide your own JavaScript
+       evaluator". That is the entire reason this provider exists — the
+       signature and `n` transforms ARE a script YouTube hands us to run —
+       so refusing to run it leaves the provider pointless. Node has a
+       sandbox built in. The script is Google's own player code, it gets no
+       require, no process and no globals beyond the arguments it is passed,
+       and it runs under a timeout. */
+    if (mod.Platform && mod.Platform.shim && typeof mod.Platform.load === 'function') {
+      const vm = await import('node:vm');
+      mod.Platform.load({
+        ...mod.Platform.shim,
+        eval: (data, env) => {
+          const ctx = vm.createContext(Object.assign(Object.create(null), env || {}));
+          /* the generated script ends in a top-level `return`, so it has to
+             be a function body rather than a program */
+          return new vm.Script(`(function(){\n${data.output}\n})()`)
+            .runInContext(ctx, { timeout: Number(process.env.UMBRA_YTJS_EVAL_TIMEOUT || 10000) });
+        },
+      });
+    }
+
+    /* Its parser logs a wall of "type mismatch" stack traces whenever
+       YouTube ships a renderer it has not seen — none of which is
+       actionable here, and all of which buries our own output. */
+    if (mod.Log && mod.Log.setLevel && mod.Log.Level) {
+      const want = String(process.env.UMBRA_YTJS_LOG || 'none').toUpperCase();
+      mod.Log.setLevel(mod.Log.Level[want] ?? mod.Log.Level.NONE);
+    }
+
     yt = await Innertube.create({ retrieve_player: true, generate_session_locally: true });
     loadState = 'ok';
     return yt;

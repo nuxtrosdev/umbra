@@ -13,10 +13,18 @@
  * answer to "is it us or is it the address".
  */
 import * as providers from '../server/providers/index.mjs';
+import * as pm from '../server/provider-manager.mjs';
 import { verdict, notesOf } from '../server/verdict.mjs';
 import { inspect as potInspect } from '../server/potoken.mjs';
 
-const VID = process.argv[2] || 'dQw4w9WgXcQ';
+/* A provider failing late, after its pool has already answered, rejects a
+   promise nobody is awaiting any more. That killed the whole probe on the
+   last line of its output. Report and carry on. */
+const late = [];
+process.on('unhandledRejection', (e) => late.push(String((e && e.message) || e).slice(0, 160)));
+
+const IDS = process.argv.slice(2).filter((a) => !a.startsWith('-'));
+const VID = IDS[0] || 'dQw4w9WgXcQ';
 const ms = (t) => `${Date.now() - t}ms`;
 const trunc = (s, n = 96) => (String(s).length > n ? String(s).slice(0, n - 1) + '…' : String(s));
 
@@ -60,6 +68,27 @@ for (const r of rows) {
   console.log(`  ${r.p.padEnd(w)}  ${tag}  ${String(r.t).padStart(7)}  ${C.dim(r.note)}`);
 }
 
+/* ---------------------------------------------------------- the server ---
+ * The loop above asks each backend directly. The server does not: it goes
+ * through the provider manager, which routes, scores and fails over. If
+ * those two disagree, the bug is ours and it is in here — which is exactly
+ * the case where a page says "every provider failed" while the backends are
+ * demonstrably fine. */
+let managerLine;
+try {
+  const r = await pm.getStreams(VID);
+  const d = r && r.data;
+  const n = [...((d && d.videoStreams) || []), ...((d && d.audioStreams) || [])].filter((f) => f && f.url).length;
+  managerLine = `${C.g('works ')}  via ${r.provider}  ${n} formats` + (d && d.hls ? ' + hls' : '');
+} catch (e) {
+  const tried = ((e && e.tried) || []).map((t) => `${t.provider}: ${trunc(t.note, 60)}`);
+  managerLine = `${C.r('failed')}  ${trunc((e && e.message) || e, 60)}` +
+    (tried.length ? '\n' + tried.map((t) => '      ' + C.dim(t)).join('\n') : '');
+}
+console.log(`\n  ${'through the manager'.padEnd(w)}  ${managerLine}`);
+console.log(C.dim('  (this is the exact call the watch page makes; if it disagrees with the rows'));
+console.log(C.dim('   above, the fault is in Umbra\'s routing, not in YouTube)'));
+
 /* ------------------------------------------------------------ verdict --- */
 const pot = potInspect();
 const tried = rows.filter((r) => r.state !== 'works').map((r) => ({ provider: r.p, note: r.note }));
@@ -92,4 +121,21 @@ if (worked.length) {
 
 console.log(`\n${C.dim('proof-of-origin')}  ${pot.configured ? C.g('available') : C.r('none')}` +
   `  ${C.dim(JSON.stringify(pot.sources || {}))}`);
-console.log(`${C.dim('provider order')}  ${providers.order().map((p) => p.id).join(' → ')}\n`);
+console.log(`${C.dim('provider order')}  ${providers.order().map((p) => p.id).join(' → ')}`);
+console.log(`${C.dim('routed for streams')}  ${pm.route('streams').map((p) => p.id).join(' → ') || '(none)'}`);
+if (late.length) console.log(`${C.dim('late failures')}  ${late.slice(0, 4).join(' · ')}`);
+
+/* more than one id: restrictions are per video, and "it works for Rick
+   Astley" has never meant "it works for yours" */
+for (const extra of IDS.slice(1)) {
+  try {
+    const r = await pm.getStreams(extra);
+    const d = r && r.data;
+    const n = [...((d && d.videoStreams) || []), ...((d && d.audioStreams) || [])].filter((f) => f && f.url).length;
+    console.log(`${C.dim('also')}  ${extra}  ${C.g('works')} via ${r.provider} · ${n} formats`);
+  } catch (e) {
+    console.log(`${C.dim('also')}  ${extra}  ${C.r('failed')} · ${trunc((e && e.message) || e, 70)}`);
+    for (const t of ((e && e.tried) || [])) console.log('        ' + C.dim(`${t.provider}: ${trunc(t.note, 70)}`));
+  }
+}
+console.log('');
