@@ -135,6 +135,33 @@ async function fromProvider(visitorData) {
 
 let bg = null;
 let bgState = null;
+let bgWindow = null;
+
+/**
+ * BotGuard's program is browser code: it reads `window`, builds elements,
+ * and refuses to run against a bare Node global. Handing it `globalThis` is
+ * why in-process minting silently produced nothing. jsdom is enough of a
+ * browser for it, and it is optional like everything else here — without it
+ * we say so plainly rather than failing in a way that looks like YouTube's
+ * fault.
+ */
+async function bgGlobals() {
+  if (bgWindow) return bgWindow;
+  try {
+    const { JSDOM } = await import('jsdom');
+    const dom = new JSDOM('<!doctype html><html><body></body></html>',
+      { url: 'https://www.youtube.com/', referrer: 'https://www.youtube.com/', pretendToBeVisual: true });
+    const w = dom.window;
+    /* jsdom has no fetch; the program needs one to collect its challenge */
+    if (!w.fetch) w.fetch = (...a) => globalThis.fetch(...a);
+    bgWindow = w;
+    return w;
+  } catch {
+    /* no jsdom: try anyway, and let the failure name itself */
+    return globalThis;
+  }
+}
+
 /** In-process minting, only if the operator installed the pieces. */
 async function fromBgUtils(visitorData) {
   if (bgState && bgState !== 'ok') return null;
@@ -145,17 +172,23 @@ async function fromBgUtils(visitorData) {
       bgState = 'ok';
     }
     const requestKey = 'O43z0dpjhgX20SCx4KAo';
-    const challenge = await bg.Challenge.create(
-      { fetch: (...a) => globalThis.fetch(...a), globalObj: globalThis, identifier: visitorData, requestKey });
+    const win = await bgGlobals();
+    const base = {
+      fetch: (...a) => globalThis.fetch(...a),
+      globalObj: win,
+      identifier: visitorData,
+      requestKey,
+    };
+    const challenge = await bg.Challenge.create(base);
     if (!challenge) throw new Error('bgutils returned no challenge');
     const token = await bg.PoToken.generate(
-      { program: challenge.program, globalName: challenge.globalName, bgConfig:
-        { fetch: (...a) => globalThis.fetch(...a), globalObj: globalThis, identifier: visitorData, requestKey } });
+      { program: challenge.program, globalName: challenge.globalName, bgConfig: base });
     return token && String(token.poToken || token);
   } catch (e) {
-    bgState = /Cannot find (module|package)/i.test(String(e && e.message))
-      ? 'bgutils-js is not installed'
-      : 'bgutils-js failed: ' + String(e && e.message).slice(0, 120);
+    const msg = String((e && e.message) || e);
+    bgState = /Cannot find (module|package)/i.test(msg)
+      ? (/jsdom/.test(msg) ? 'jsdom is not installed (bgutils needs a dom)' : 'bgutils-js is not installed')
+      : 'bgutils-js failed: ' + msg.slice(0, 120);
     return null;
   }
 }

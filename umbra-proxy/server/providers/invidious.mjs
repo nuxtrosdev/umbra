@@ -194,10 +194,50 @@ export async function trending(region = 'US') {
   }, { capability: 'trending' });
 }
 
+/* A googlevideo URL an Invidious instance was handed is bound to the address
+ * that asked for it — its `ip=` parameter names the instance, not us. Handing
+ * those straight to a browser behind a different address is the single most
+ * common way a "working" extraction still plays nothing: the API call
+ * succeeds, the formats look real, and every byte request is refused.
+ *
+ * Every Invidious instance can stream the bytes itself instead, which is what
+ * `local=true` means on its own URLs and what /latest_version exists for. The
+ * instance already has a relationship with Google that works; borrow it. The
+ * bytes then travel instance → Umbra → browser, and the only address Google
+ * ever sees belongs to a machine whose whole job is to be seen.
+ *
+ * The raw URL is kept as a fallback for the case where our address is fine
+ * and the direct fetch is simply faster. UMBRA_INVIDIOUS_LOCAL=0 restores the
+ * old behaviour.
+ */
+/* read per call, not per import, so a deployment (and the suite) can flip it */
+const localStreams = () => !/^(0|false|no|off)$/i.test(process.env.UMBRA_INVIDIOUS_LOCAL || '');
+
+export function viaInstance(inst, videoId, f) {
+  const raw = (f && f.url) || '';
+  if (!localStreams() || !raw) return raw;
+  try {
+    /* the instance's own proxy path for a url it already holds */
+    const u = new URL(raw);
+    if (/(^|\.)googlevideo\.com$/i.test(u.hostname)) {
+      const base = String(inst.baseUrl).replace(/\/$/, '');
+      if (f.itag != null) {
+        return base + '/latest_version?id=' + encodeURIComponent(videoId) +
+          '&itag=' + encodeURIComponent(f.itag) + '&local=true';
+      }
+      /* no itag to ask for: route the exact url through the instance */
+      u.searchParams.set('local', 'true');
+      return base + '/videoplayback' + u.search;
+    }
+  } catch { /* not a url we understand: leave it alone */ }
+  return raw;
+}
+
 export async function getStreams(videoId) {
   return pool.run(async (inst) => {
     const j = await call(inst, '/api/v1/videos/' + encodeURIComponent(videoId));
     const adaptive = j.adaptiveFormats || [];
+    const via = (f) => viaInstance(inst, j.videoId || videoId, f);
     const s = T.streamInfo({
       id: j.videoId || videoId,
       title: j.title,
@@ -205,17 +245,17 @@ export async function getStreams(videoId) {
       live: j.liveNow === true,
       videoStreams: [
         ...(j.formatStreams || []).map((f) => ({
-          url: f.url, itag: f.itag, mimeType: f.type, quality: f.qualityLabel || f.quality,
+          url: via(f), directUrl: f.url, itag: f.itag, mimeType: f.type, quality: f.qualityLabel || f.quality,
           bitrate: f.bitrate, fps: f.fps, videoOnly: false,
         })),
         ...adaptive.filter((f) => /^video\//.test(String(f.type || ''))).map((f) => ({
-          url: f.url, itag: f.itag, mimeType: f.type, quality: f.qualityLabel,
+          url: via(f), directUrl: f.url, itag: f.itag, mimeType: f.type, quality: f.qualityLabel,
           bitrate: f.bitrate, fps: f.fps, width: f.width, height: f.height,
           contentLength: f.clen, videoOnly: true,
         })),
       ],
       audioStreams: adaptive.filter((f) => /^audio\//.test(String(f.type || ''))).map((f) => ({
-        url: f.url, itag: f.itag, mimeType: f.type, quality: f.audioQuality,
+        url: via(f), directUrl: f.url, itag: f.itag, mimeType: f.type, quality: f.audioQuality,
         bitrate: f.bitrate, contentLength: f.clen, audioOnly: true,
       })),
       subtitles: (j.captions || []).map((c) => ({

@@ -6,7 +6,15 @@
   "main": "umbra-proxy/server/index.mjs",
   "scripts": {
     "start": "node umbra-proxy/server/index.mjs",
-    "test": "node umbra-proxy/test/offline.mjs"
+    "test": "node umbra-proxy/test/offline.mjs",
+    "probe": "node umbra-proxy/tools/probe.mjs",
+    "youtube:enable": "npm install --no-save youtubei.js bgutils-js jsdom"
+  },
+  "//optionalDependencies": "Umbra runs on the standard library alone. These three turn on the YouTube paths that need more than that: a maintained InnerTube client with a signature interpreter, and in-process proof-of-origin minting (which needs a DOM). npm install --omit=optional to skip them.",
+  "optionalDependencies": {
+    "bgutils-js": "^3.1.1",
+    "jsdom": "^25.0.1",
+    "youtubei.js": "^18.0.0"
   },
   "keywords": [],
   "author": "",

@@ -290,6 +290,37 @@ async function unit() {
       /\/~umbra\/p\//.test(blank.probe()), blank.probe());
   }
 
+  /* ---- a format with a url is not the same as a playable one ----
+     Invidious hands back the googlevideo urls IT was given, and those carry
+     an `ip=` binding naming the instance. Extraction then "succeeds" while
+     every byte request is refused — the most convincing way to play
+     nothing. The instance will stream them itself; borrow the relationship
+     that already works. */
+  {
+    const INV = await import('../server/providers/invidious.mjs');
+    const inst = { baseUrl: 'https://inv.example' };
+    const gvs = { url: 'https://rr3---sn-x.googlevideo.com/videoplayback?expire=1&ip=203.0.113.9&itag=137', itag: '137' };
+    ok('a googlevideo url is routed through the instance that can fetch it',
+      INV.viaInstance(inst, VID, gvs) ===
+        'https://inv.example/latest_version?id=' + VID + '&itag=137&local=true',
+      INV.viaInstance(inst, VID, gvs));
+
+    const noItag = { url: 'https://rr3---sn-x.googlevideo.com/videoplayback?expire=1&ip=203.0.113.9' };
+    ok('and one with no itag to ask for is still routed, not abandoned',
+      /^https:\/\/inv\.example\/videoplayback\?/.test(INV.viaInstance(inst, VID, noItag)) &&
+      /local=true/.test(INV.viaInstance(inst, VID, noItag)),
+      INV.viaInstance(inst, VID, noItag));
+
+    ok('anything that is not googlevideo is left exactly as it came',
+      INV.viaInstance(inst, VID, { url: 'https://inv.example/already/fine.mp4', itag: '18' }) ===
+        'https://inv.example/already/fine.mp4');
+
+    process.env.UMBRA_INVIDIOUS_LOCAL = '0';
+    ok('and an operator who wants the direct url can still have it',
+      INV.viaInstance(inst, VID, gvs) === gvs.url, INV.viaInstance(inst, VID, gvs));
+    delete process.env.UMBRA_INVIDIOUS_LOCAL;
+  }
+
   /* ---- the direct embed: on by default, and narrow ----
      The only player that never has to defeat BotGuard is one the visitor's
      own browser loads from Google — which is also the only thing that puts
@@ -729,12 +760,20 @@ async function unit() {
   ok('routing only offers providers that declare the capability',
     PM.route('streams').every((p) => p.capabilities.streams) &&
     PM.route('search').every((p) => p.capabilities.search));
+  /* youtubei.js is an optional dependency, so whether it routes depends on
+     whether the operator installed it. Both are correct; what must hold is
+     that an engine with nothing behind it stays out, and that an installed
+     one never jumps the configured order. */
+  const hasYtjs = await import('youtubei.js').then(() => true, () => false);
+  const routed = PM.route('search').map((p) => p.id);
   ok('optional engines that are not installed stay out of the routing',
-    !PM.route('search').some((p) => p.id === 'youtubejs' || p.id === 'ytdlp' || p.id === 'poketube'),
-    PM.route('search').map((p) => p.id).join('>'));
+    !routed.includes('ytdlp') && !routed.includes('poketube') &&
+    (hasYtjs || !routed.includes('youtubejs')),
+    routed.join('>') + (hasYtjs ? ' (youtubei.js present)' : ''));
   ok('an untested provider is never promoted above the configured order',
-    PM.route('search')[0].id === 'innertube' && PM.route('search').map((p) => p.id).join(',') === 'innertube,piped,invidious',
-    PM.route('search').map((p) => p.id).join(','));
+    routed[0] === 'innertube' &&
+    routed.join(',') === (hasYtjs ? 'innertube,piped,invidious,youtubejs' : 'innertube,piped,invidious'),
+    routed.join(','));
   PM.setRouter(() => [RG.get('invidious')]);
   ok('the routing policy is swappable for a future ai router',
     PM.route('search').length === 1 && PM.route('search')[0].id === 'invidious');

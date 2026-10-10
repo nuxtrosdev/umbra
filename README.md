@@ -323,6 +323,59 @@ the surface most likely to work from a scored address — and the one that
 earns the token the native path is missing. The tried-list is still shown;
 the failure is reported, not hidden.
 
+#### One command that says whether it is us or the address
+
+```
+npm run probe            # or: node umbra-proxy/tools/probe.mjs <videoId>
+```
+
+Every backend fails the same way when the machine's address is the problem,
+and from inside a browser that is indistinguishable from the proxy being
+broken. The probe asks each backend directly, from this machine, and prints
+a verdict rather than a stack trace:
+
+```
+  innertube  gated     412ms  answered, no urls
+  piped      failed    272ms  no piped instance answered
+  invidious  works     840ms  6 formats + hls
+
+verdict  this address can still extract — via invidious.
+```
+
+It starts no server and needs no session. `works` anywhere means the fault
+is on our side of the wire; `bot wall` means it is the address and no
+extractor will fix it; `gated` means proof-of-origin is the lever.
+
+#### Streams an instance fetches for us
+
+An Invidious instance hands back the `googlevideo.com` URLs **it** was
+given, and those carry an `ip=` parameter naming the instance. Passing them
+to a browser on a different address is the most convincing way to play
+nothing: extraction succeeds, the formats look real, every byte is refused.
+Instances will stream those bytes themselves — that is what `local=true`
+and `/latest_version` are for — so Umbra asks them to. The bytes travel
+instance → Umbra → browser and the only address Google sees belongs to a
+machine whose whole job is to be seen. `UMBRA_INVIDIOUS_LOCAL=0` restores
+the direct URLs. (Piped already returns instance-proxied URLs, so it needed
+nothing.)
+
+#### Turning on the paths that need dependencies
+
+Umbra runs on the standard library. Three optional packages turn on the
+YouTube paths that cannot:
+
+```
+npm run youtube:enable   # youtubei.js + bgutils-js + jsdom
+```
+
+- **youtubei.js** — the maintained InnerTube client, with the player-script
+  interpreter that deobfuscates `sig` and `n`. The adapter already exists;
+  installing the package enables it.
+- **bgutils-js + jsdom** — in-process proof-of-origin minting. BotGuard's
+  program is browser code and refuses a bare Node global, which is why
+  minting silently produced nothing before; jsdom is enough of a browser for
+  it. `npm install --omit=optional` keeps Umbra dependency-free.
+
 #### When the browser refuses something, say so
 
 A blocked subresource is invisible to the code that needed it: the browser
