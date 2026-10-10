@@ -1648,6 +1648,24 @@ async function wire() {
     ahls.status === 200 && !!ahls.j.data.hls && /HlsOnly1234\.m3u8/.test(ahls.j.data.hls),
     'hls=' + String(ahls.j.data && ahls.j.data.hls).slice(0, 60));
 
+  /* The other half of that coin. A backend that answers 200 with an empty
+     format list has failed the viewer exactly as completely as one that
+     times out, but failover only ever noticed throws — so the empty answer
+     won the chain and the page got a player with nothing in it. */
+  const aempty = await API('/streams/EmptyFmts12');
+  ok('a backend answering 200 with zero formats is a failure, not a win',
+    aempty.status >= 400 &&
+    [...(((aempty.j.error || {}).tried) || []), ...((aempty.j.meta || {}).tried || [])]
+      .some((t) => t.provider === 'piped' && /no playable formats/.test(t.note || '')),
+    'http ' + aempty.status + ' ' + JSON.stringify(aempty.j.meta || aempty.j).slice(0, 260));
+
+  /* and an hls manifest is not "nothing": it is beaten by real formats, but
+     it is still returned when it is all anyone has */
+  ok('an hls-only answer is held, not discarded, while better ones are sought',
+    ahls.j.meta.provider === 'innertube' &&
+    (ahls.j.meta.tried || []).some((t) => /hls manifest only/.test(t.note || '')),
+    'provider=' + ahls.j.meta.provider + ' tried=' + JSON.stringify(ahls.j.meta.tried || []).slice(0, 120));
+
   const ahdiag = await API('/diagnose/HlsOnly1234');
   ok('diagnose counts an hls-only client as usable, not as a failure',
     ahdiag.status === 200 && ahdiag.j.data.usable === true &&

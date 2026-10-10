@@ -111,6 +111,31 @@ function providerScore(p) {
  * carrying the full `tried` list, which is what lets the UI say *which*
  * backends were asked instead of a bare "unavailable".
  */
+/* ------------------------------------------------------- what counts ----
+ * Failover only ever reacted to a throw, so a backend that answered HTTP
+ * 200 with an empty format list ended the chain as a "success" and the
+ * watch page got a player with nothing to play — indistinguishable, from
+ * the sofa, from total failure, except that the providers that WOULD have
+ * worked were never asked.
+ *
+ * Two different things were being conflated, so there are two verdicts:
+ *   'bad'      nothing usable at all — treat exactly like a thrown error.
+ *   'degraded' usable, but less than another provider might give. An HLS
+ *              manifest is the case that matters: it genuinely plays, so
+ *              it is never discarded, but a set of real formats beats it.
+ *              Hold it, keep asking, and return it only if nobody better
+ *              answers.
+ */
+const GRADE = {
+  streams: (d) => {
+    const n = [...((d && d.videoStreams) || []), ...((d && d.audioStreams) || [])]
+      .filter((f) => f && f.url).length;
+    if (n) return null;
+    if (d && d.hls) return { grade: 'degraded', why: 'hls manifest only, no individual formats' };
+    return { grade: 'bad', why: 'answered with no playable formats' };
+  },
+};
+
 async function failover(capability, run, { providers = null } = {}) {
   const chain = providers || route(capability);
   if (!chain.length) {
@@ -120,19 +145,30 @@ async function failover(capability, run, { providers = null } = {}) {
     throw e;
   }
   const tried = [];
+  let held = null; /* a usable-but-beatable answer, kept in case nothing better comes */
   for (const p of chain) {
     const t0 = Date.now();
     try {
       const out = unwrap(await run(p));
       if (out.data === null || out.data === undefined) throw new Error('provider returned nothing');
+      const g = GRADE[capability] && GRADE[capability](out.data);
+      if (g && g.grade === 'bad') throw new Error(g.why);
+      const answer = { data: out.data, provider: p.id, instance: out.instance, tried, ms: Date.now() - t0 };
+      if (g && g.grade === 'degraded') {
+        if (!held) held = answer;
+        tried.push({ provider: p.id, note: g.why, instances: [] });
+        log({ capability, provider: p.id, ok: true, ms: Date.now() - t0, error: g.why });
+        continue;
+      }
       log({ capability, provider: p.id, ok: true, ms: Date.now() - t0 });
-      return { data: out.data, provider: p.id, instance: out.instance, tried, ms: Date.now() - t0 };
+      return answer;
     } catch (e) {
       const note = String((e && e.message) || e).slice(0, 200);
       tried.push({ provider: p.id, note, instances: (e && e.tried) || [] });
       log({ capability, provider: p.id, ok: false, ms: Date.now() - t0, error: note });
     }
   }
+  if (held) return { ...held, tried };
   const err = new Error(`every provider failed for ${capability}`);
   err.tried = tried;
   err.code = 'ALL_PROVIDERS_FAILED';

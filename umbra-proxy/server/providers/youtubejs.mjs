@@ -224,11 +224,19 @@ export async function getStreams(videoId) {
     const c = await client();
     const info = await c.getInfo(videoId);
     const all = [...(info.streaming_data?.formats || []), ...(info.streaming_data?.adaptive_formats || [])];
-    const deciphered = all.map((f) => {
-      let u = f.url;
-      try { if (!u && typeof f.decipher === 'function') u = f.decipher(c.session.player); } catch { u = null; }
-      return { f, u };
-    });
+    /* `decipher` returns a promise in this version — it awaits the player
+       script evaluator — so taking its value synchronously stored a Promise
+       in `url`. Every such format was then silently dropped as "not a url"
+       (hence: works, 0 formats) and its rejection surfaced later with no
+       one left to catch it. Await them, and let individual formats fail
+       without taking the rest down. */
+    const deciphered = await Promise.all(all.map(async (f) => {
+      let u = f.url || null;
+      if (!u && typeof f.decipher === 'function') {
+        try { u = await f.decipher(c.session.player); } catch { u = null; }
+      }
+      return { f, u: typeof u === 'string' && u ? u : null };
+    }));
     const mk = ({ f, u }) => ({
       url: u, itag: f.itag, mimeType: f.mime_type, quality: f.quality_label || f.quality,
       bitrate: f.bitrate, width: f.width, height: f.height, fps: f.fps,

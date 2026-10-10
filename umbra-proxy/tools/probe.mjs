@@ -36,36 +36,47 @@ const C = process.stdout.isTTY
 console.log(`\n${C.b('umbra · youtube reachability')}  video ${VID}  ·  node ${process.version}  ·  ${new Date().toISOString()}`);
 console.log(C.dim('asking every backend from this machine, which is the address YouTube judges\n'));
 
-const rows = [];
 const allNotes = [];
 
-for (const p of providers.ALL) {
-  if (typeof p.getStreams !== 'function') continue;
-  const t0 = Date.now();
-  try {
-    const s = await p.getStreams(VID);
-    const data = s && (s.data || s);
-    const v = [...((data && data.videoStreams) || [])];
-    const a = [...((data && data.audioStreams) || [])];
-    const withUrl = [...v, ...a].filter((f) => f && f.url).length;
-    const hls = !!(data && data.hls);
-    if (withUrl || hls) {
-      rows.push({ p: p.id, state: 'works', note: `${withUrl} formats` + (hls ? ' + hls' : ''), t: ms(t0) });
-    } else {
-      rows.push({ p: p.id, state: 'gated', note: 'answered, no urls', t: ms(t0) });
+/* What a result is worth, said the same way everywhere: a format the page
+   can actually hand to a <video> element. "27 formats" and "0 formats" are
+   both HTTP 200s, and only one of them plays. */
+function shape(data) {
+  const v = ((data && data.videoStreams) || []).filter((f) => f && f.url);
+  const a = ((data && data.audioStreams) || []).filter((f) => f && f.url);
+  const hls = !!(data && data.hls);
+  const host = (v[0] || a[0] || {}).url ? new URL((v[0] || a[0]).url).host : null;
+  return { v: v.length, a: a.length, n: v.length + a.length, hls, host };
+}
+const describe = (sh) =>
+  `${sh.n} formats (${sh.v}v ${sh.a}a)` + (sh.hls ? ' + hls' : '') + (sh.host ? ` · ${sh.host}` : '');
+
+async function sweep(id) {
+  const rows = [];
+  for (const p of providers.ALL) {
+    if (typeof p.getStreams !== 'function') continue;
+    const t0 = Date.now();
+    try {
+      const s = await p.getStreams(id);
+      const sh = shape(s && (s.data || s));
+      rows.push(sh.n
+        ? { p: p.id, state: 'works', note: describe(sh), t: ms(t0) }
+        : { p: p.id, state: 'gated', note: sh.hls ? 'hls only, no formats the page can play' : 'answered, no urls', t: ms(t0) });
+    } catch (e) {
+      const note = String((e && e.message) || e);
+      allNotes.push(note);
+      for (const n of notesOf((e && e.tried) || [])) allNotes.push(n);
+      rows.push({ p: p.id, state: 'failed', note: trunc(note), t: ms(t0) });
     }
-  } catch (e) {
-    const note = String((e && e.message) || e);
-    allNotes.push(note);
-    for (const n of notesOf((e && e.tried) || [])) allNotes.push(n);
-    rows.push({ p: p.id, state: 'failed', note: trunc(note), t: ms(t0) });
   }
+  return rows;
 }
 
-const w = Math.max(...rows.map((r) => r.p.length), 9);
-for (const r of rows) {
-  const tag = r.state === 'works' ? C.g('works ') : r.state === 'gated' ? C.y('gated ') : C.r('failed');
-  console.log(`  ${r.p.padEnd(w)}  ${tag}  ${String(r.t).padStart(7)}  ${C.dim(r.note)}`);
+function printRows(rows, w) {
+  for (const r of rows) {
+    const tag = r.state === 'works' ? C.g('works ') : r.state === 'gated' ? C.y('gated ') : C.r('failed');
+    console.log(`  ${r.p.padEnd(w)}  ${tag}  ${String(r.t).padStart(7)}  ${C.dim(r.note)}`);
+  }
 }
 
 /* ---------------------------------------------------------- the server ---
@@ -74,18 +85,22 @@ for (const r of rows) {
  * those two disagree, the bug is ours and it is in here — which is exactly
  * the case where a page says "every provider failed" while the backends are
  * demonstrably fine. */
-let managerLine;
-try {
-  const r = await pm.getStreams(VID);
-  const d = r && r.data;
-  const n = [...((d && d.videoStreams) || []), ...((d && d.audioStreams) || [])].filter((f) => f && f.url).length;
-  managerLine = `${C.g('works ')}  via ${r.provider}  ${n} formats` + (d && d.hls ? ' + hls' : '');
-} catch (e) {
-  const tried = ((e && e.tried) || []).map((t) => `${t.provider}: ${trunc(t.note, 60)}`);
-  managerLine = `${C.r('failed')}  ${trunc((e && e.message) || e, 60)}` +
-    (tried.length ? '\n' + tried.map((t) => '      ' + C.dim(t)).join('\n') : '');
+async function viaManager(id) {
+  try {
+    const r = await pm.getStreams(id);
+    const sh = shape(r && r.data);
+    return (sh.n ? C.g('works ') : C.y('gated ')) + `  via ${r.provider}  ${describe(sh)}`;
+  } catch (e) {
+    const tried = ((e && e.tried) || []).map((t) => `${t.provider}: ${trunc(t.note, 60)}`);
+    return `${C.r('failed')}  ${trunc((e && e.message) || e, 60)}` +
+      (tried.length ? '\n' + tried.map((t) => '      ' + C.dim(t)).join('\n') : '');
+  }
 }
-console.log(`\n  ${'through the manager'.padEnd(w)}  ${managerLine}`);
+
+const rows = await sweep(VID);
+const w = Math.max(...rows.map((r) => r.p.length), 19);
+printRows(rows, w);
+console.log(`\n  ${'through the manager'.padEnd(w)}  ${await viaManager(VID)}`);
 console.log(C.dim('  (this is the exact call the watch page makes; if it disagrees with the rows'));
 console.log(C.dim('   above, the fault is in Umbra\'s routing, not in YouTube)'));
 
@@ -128,14 +143,8 @@ if (late.length) console.log(`${C.dim('late failures')}  ${late.slice(0, 4).join
 /* more than one id: restrictions are per video, and "it works for Rick
    Astley" has never meant "it works for yours" */
 for (const extra of IDS.slice(1)) {
-  try {
-    const r = await pm.getStreams(extra);
-    const d = r && r.data;
-    const n = [...((d && d.videoStreams) || []), ...((d && d.audioStreams) || [])].filter((f) => f && f.url).length;
-    console.log(`${C.dim('also')}  ${extra}  ${C.g('works')} via ${r.provider} · ${n} formats`);
-  } catch (e) {
-    console.log(`${C.dim('also')}  ${extra}  ${C.r('failed')} · ${trunc((e && e.message) || e, 70)}`);
-    for (const t of ((e && e.tried) || [])) console.log('        ' + C.dim(`${t.provider}: ${trunc(t.note, 70)}`));
-  }
+  console.log(`\n${C.b('video ' + extra)}`);
+  printRows(await sweep(extra), w);
+  console.log(`  ${'through the manager'.padEnd(w)}  ${await viaManager(extra)}`);
 }
 console.log('');
