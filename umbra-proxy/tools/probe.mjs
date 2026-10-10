@@ -16,6 +16,7 @@ import * as providers from '../server/providers/index.mjs';
 import * as pm from '../server/provider-manager.mjs';
 import { verdict, notesOf } from '../server/verdict.mjs';
 import { inspect as potInspect } from '../server/potoken.mjs';
+import * as local from '../server/piped-local.mjs';
 
 /* A provider failing late, after its pool has already answered, rejects a
    promise nobody is awaiting any more. That killed the whole probe on the
@@ -66,7 +67,8 @@ async function sweep(id) {
       const note = String((e && e.message) || e);
       allNotes.push(note);
       for (const n of notesOf((e && e.tried) || [])) allNotes.push(n);
-      rows.push({ p: p.id, state: 'failed', note: trunc(note), t: ms(t0) });
+      rows.push({ p: p.id, state: 'failed', note: trunc(note), t: ms(t0),
+        why: notesOf((e && e.tried) || []).slice(0, 3) });
     }
   }
   return rows;
@@ -76,6 +78,28 @@ function printRows(rows, w) {
   for (const r of rows) {
     const tag = r.state === 'works' ? C.g('works ') : r.state === 'gated' ? C.y('gated ') : C.r('failed');
     console.log(`  ${r.p.padEnd(w)}  ${tag}  ${String(r.t).padStart(7)}  ${C.dim(r.note)}`);
+    /* "no instance answered" is a summary, not a reason. The reason is one
+       level down, in what each instance actually said. */
+    for (const n of (r.why || [])) console.log(`  ${' '.repeat(w)}          ${C.dim('· ' + trunc(n, 86))}`);
+  }
+}
+
+/* --------------------------------------------------------------- why ----
+ * When a video fails everywhere while another video works from the same
+ * machine, the address is fine and the video is the variable: age gate,
+ * region, licence, members-only. The local engine already walks every
+ * client without short-circuiting, so ask it rather than guess. */
+async function why(id) {
+  try {
+    const d = await local.diagnose(id);
+    console.log(`  ${C.b('why')}  ${d.diagnosis || '(no diagnosis)'}`);
+    for (const c of (d.clients || []).slice(0, 12)) {
+      const st = c.error ? C.r(trunc(c.error, 44))
+        : `${c.playability || '?'}${c.reason ? ' · ' + trunc(c.reason, 44) : ''} · ${c.formats || 0} formats, ${c.resolved || 0} usable${c.hls ? ', hls' : ''}`;
+      console.log(`       ${String(c.client).padEnd(18)} ${C.dim(st)}`);
+    }
+  } catch (e) {
+    console.log(`  ${C.b('why')}  ${C.dim('diagnosis unavailable: ' + trunc((e && e.message) || e, 70))}`);
   }
 }
 
@@ -103,6 +127,7 @@ printRows(rows, w);
 console.log(`\n  ${'through the manager'.padEnd(w)}  ${await viaManager(VID)}`);
 console.log(C.dim('  (this is the exact call the watch page makes; if it disagrees with the rows'));
 console.log(C.dim('   above, the fault is in Umbra\'s routing, not in YouTube)'));
+if (!rows.some((r) => r.state === 'works')) await why(VID);
 
 /* ------------------------------------------------------------ verdict --- */
 const pot = potInspect();
@@ -144,7 +169,9 @@ if (late.length) console.log(`${C.dim('late failures')}  ${late.slice(0, 4).join
    Astley" has never meant "it works for yours" */
 for (const extra of IDS.slice(1)) {
   console.log(`\n${C.b('video ' + extra)}`);
-  printRows(await sweep(extra), w);
+  const r2 = await sweep(extra);
+  printRows(r2, w);
   console.log(`  ${'through the manager'.padEnd(w)}  ${await viaManager(extra)}`);
+  if (!r2.some((r) => r.state === 'works')) await why(extra);
 }
 console.log('');
