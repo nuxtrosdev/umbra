@@ -200,7 +200,15 @@ const CSP_SHELL = [
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
   "connect-src 'self' ws: wss:",
-  "frame-src 'self' http: https: blob:",
+  /* The shell only ever frames its own origin: every tab is a wire path and
+     every capsule is local. Saying so turns an un-hookable escape into
+     something the browser refuses *and reports* — `location.href = <absolute
+     url>` cannot be intercepted from inside the frame (Location is
+     [Unforgeable]), so until now a page that did it genuinely left, and all
+     the shell could do was notice afterwards and drag the tab back. Blocked
+     here, the frame stays put and a securitypolicyviolation names the
+     destination, which the shell then follows *on the wire*. */
+  "frame-src 'self' blob:",
   "form-action 'self'",
   "base-uri 'self'",
 ].join('; ');

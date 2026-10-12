@@ -358,7 +358,7 @@ const policeOff = () => S.policy.follow === 'native';
    user intent (address bar, chrome buttons, policy change) resets it, so an
    oscillating page provably runs out of budget. */
 const ADOPT_WINDOW = 12000;
-const ADOPT_MAX = 3;
+const ADOPT_MAX = 5;
 function adoptAllowed(t, target) {
   const now = Date.now();
   t.adopts = (t.adopts || []).filter((e) => now - e.at < ADOPT_WINDOW);
@@ -376,6 +376,33 @@ function stopFollowing(t, msg) {
   renderTab(t); renderStatus();
   veil(t, 'error', msg);
 }
+
+/* A frame navigation the browser refused for us.
+ *
+ * `frame-src 'self'` stops the escape, and the violation report carries the
+ * address the page was trying to reach. That is the one thing the shell could
+ * never learn before: an off-origin landing is unreadable from script, so a
+ * self-navigating page could only be reverted, and reverting a page that
+ * navigates on every load is how a tab ended up refusing to follow anything.
+ * Now the hop is honoured - through Umbra, which is where it belonged. */
+document.addEventListener('securitypolicyviolation', (ev) => {
+  const d = String(ev.effectiveDirective || ev.violatedDirective || '');
+  if (!/^frame-src/.test(d)) return;
+  const raw = String(ev.blockedURI || '');
+  if (!/^https?:\/\//i.test(raw)) return;
+  const target = raw.replace(/^https:/, 'umbra:').replace(/^http:/, 'umbra:');
+  const t = active();
+  if (!t) return;
+  if (!adoptAllowed(t, target)) {
+    log('e', 'frame kept redirecting to ' + shortU(target) + ' - stopped following');
+    stopFollowing(t, 'This page redirects itself every time it loads. Umbra stopped following it to avoid a loop - '
+      + 'retry to try once more.');
+    return;
+  }
+  t.fails = 0;
+  log('s', 'followed a blocked frame redirect onto the wire -> ' + shortU(target));
+  goto(t, target, { push: true });
+});
 
 function onFrameLoad(t) {
   let where = null;
@@ -439,13 +466,14 @@ function onFrameLoad(t) {
       stopFollowing(t, 'This tab navigated off Umbra and the redirect policy is set to “off”, so it was not reverted. Anything it loads now goes direct, not through the proxy. Retry to pull it back onto the wire.');
       return;
     }
-    if (t.fails >= 2) {
+    if (t.fails >= 4) {
       /* reverting again would loop forever (dead wire, hostile page): say so */
       t.loading = false;
       t.pendingNav = null;
       clearWatchdog(t);
       renderTab(t); renderStatus();
-      veil(t, 'error', 'This page kept leaving Umbra’s frame, so the tab stopped following it. Retry to reload it cleanly.');
+      veil(t, 'error', 'This page kept leaving Umbra’s frame, so the tab stopped following it. '
+        + 'Retry to reload it cleanly, or set the redirect policy to "off" to let it navigate freely.');
       log('e', 'frame would not stay on the wire for ' + shortU(t.url) + ' — holding with an error, not looping');
       return;
     }

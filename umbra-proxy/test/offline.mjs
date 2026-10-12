@@ -1563,6 +1563,28 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* Redirects a page performs on itself, which no shim can intercept. */
+  {
+    const shellRes = await call('/');
+    const shellCsp = shellRes.headers.get('content-security-policy') || '';
+    ok('the shell frames its own origin only, so an escape is refused and reported',
+      /frame-src 'self' blob:/.test(shellCsp) && !/frame-src[^;]*https:/.test(shellCsp),
+      shellCsp.split(';').find((x) => /frame-src/.test(x)) || 'none');
+
+    const src = fs.readFileSync(path.join(HERE, '..', 'public', 'shell.js'), 'utf8');
+    ok('a refused frame navigation is followed onto the wire, not mourned',
+      /securitypolicyviolation/.test(src) && /frame-src/.test(src) &&
+      /goto\(t, target/.test(src));
+    ok('and a page that will not settle still runs out of budget rather than looping',
+      /adoptAllowed\(t, target\)/.test(src) && /stopFollowing/.test(src));
+
+    /* the one frame allowed to be remote lives in a capsule, and capsules
+       are documents, not the shell: tightening one must not touch the other */
+    const ix = fs.readFileSync(path.join(HERE, '..', 'server', 'index.mjs'), 'utf8');
+    ok('the direct embed is unaffected: document CSP still frames youtube when enabled',
+      /"frame-src 'self' blob:" \+ \(DIRECT_EMBED \? ' ' \+ DIRECT_HOSTS : ''\)/.test(ix));
+  }
+
   /* Audio that exists but cannot be heard. */
   {
     const src = fs.readFileSync(path.join(HERE, '..', 'public', 'player.js'), 'utf8');
