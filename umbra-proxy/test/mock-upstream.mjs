@@ -242,6 +242,29 @@ const server = http.createServer((req, res) => {
     return serveRange(req, res, CLIP, p.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4');
   }
   if (p === '/tone.wav') return serveRange(req, res, TONE, 'audio/wav');
+  /* An HLS presentation: a master playlist pointing at a media playlist
+     pointing at segments, with a key and an init segment — i.e. every kind
+     of line a rewriter has to recognise, including a relative one. */
+  if (p === '/hls/HlsOnly1234.m3u8') {
+    return send(res, 200, { 'content-type': 'application/vnd.apple.mpegurl' },
+      ['#EXTM3U',
+        '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360',
+        `http://127.0.0.1:${PORT}/hls/360/index.m3u8`,
+        '#EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=1280x720',
+        '720/index.m3u8', ''].join('\n'));
+  }
+  if (/^\/hls\/\d+\/index\.m3u8$/.test(p)) {
+    return send(res, 200, { 'content-type': 'application/vnd.apple.mpegurl' },
+      ['#EXTM3U', '#EXT-X-TARGETDURATION:4', '#EXT-X-VERSION:7',
+        `#EXT-X-KEY:METHOD=AES-128,URI="http://127.0.0.1:${PORT}/hls/key.bin"`,
+        '#EXT-X-MAP:URI="init.mp4"',
+        '#EXTINF:4.0,', 'seg0.m4s',
+        '#EXTINF:4.0,', `http://127.0.0.1:${PORT}/hls/360/seg1.m4s`,
+        '#EXT-X-ENDLIST', ''].join('\n'));
+  }
+  if (/^\/hls\/.*\.(m4s|mp4|bin)$/.test(p)) {
+    return serveRange(req, res, CLIP, 'video/iso.segment');
+  }
   if (p === '/media') {
     return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },
       `<!doctype html><html><head><title>media</title></head><body><h1>media</h1>` +

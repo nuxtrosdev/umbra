@@ -1956,6 +1956,71 @@ async function wire() {
     ahls.status === 200 && !!ahls.j.data.hls && /HlsOnly1234\.m3u8/.test(ahls.j.data.hls),
     'hls=' + String(ahls.j.data && ahls.j.data.hls).slice(0, 60));
 
+  /* …and now it is actually playable. A manifest is a list of addresses, so
+     relaying it unchanged would send the browser to googlevideo directly:
+     off the wire, and refused there anyway, because those urls are signed
+     for the address that extracted them. Mode h rewrites every one. */
+  {
+    const HLS = await import('../server/hls.mjs');
+    const ctx0 = { tabId: 't', session: 's', gen: 'g' };
+    const fakeMint = (c, u, m) => '/W/' + m + '/' + encodeURIComponent(u);
+    const out = HLS.rewriteManifest([
+      '#EXTM3U',
+      '#EXT-X-KEY:METHOD=AES-128,URI="https://g.com/key.bin"',
+      '#EXT-X-MAP:URI="init.mp4"',
+      '#EXT-X-STREAM-INF:BANDWIDTH=1',
+      'https://g.com/v/720.m3u8',
+      '#EXTINF:4.0,',
+      'seg1.m4s',
+    ].join('\n'), 'https://g.com/base/x.m3u8', ctx0, fakeMint);
+    ok('nested playlists stay manifests and segments become bytes',
+      /\/W\/h\/https%3A%2F%2Fg.com%2Fv%2F720.m3u8/.test(out) &&
+      /\/W\/m\/https%3A%2F%2Fg.com%2Fbase%2Fseg1.m4s/.test(out),
+      out.split('\n').filter((l) => /\/W\//.test(l)).join(' | ').slice(0, 120));
+    ok('keys and init segments are re-anchored too, attribute and all',
+      /URI="\/W\/m\/https%3A%2F%2Fg.com%2Fkey.bin"/.test(out) &&
+      /URI="\/W\/m\/https%3A%2F%2Fg.com%2Fbase%2Finit.mp4"/.test(out));
+    ok('tags, timing and comments are copied, not interpreted',
+      /^#EXTM3U$/m.test(out) && /^#EXTINF:4\.0,$/m.test(out) &&
+      /^#EXT-X-STREAM-INF:BANDWIDTH=1$/m.test(out));
+
+    /* over the real wire, with the real token machinery */
+    const hlsWatch = await call((await mint('umbra://tube/watch?v=HlsOnly1234', 'd', tn.tab)).href);
+    const hlsInfo = JSON.parse((/data-info='([^']+)'/.exec(hlsWatch.text) || [])[1]
+      .replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+    ok('an hls-only video reaches the player as a manifest on the wire',
+      typeof hlsInfo.hlsWire === 'string' && hlsInfo.hlsWire.startsWith('/~umbra/h/'),
+      'hlsWire=' + String(hlsInfo.hlsWire) + ' hls=' + String(hlsInfo.hls) +
+      ' keys=' + Object.keys(hlsInfo).join(','));
+    if (typeof hlsInfo.hlsWire === 'string') {
+      const man = await call(hlsInfo.hlsWire);
+      ok('the manifest arrives as a manifest, same-origin',
+        man.status === 200 && /mpegurl/.test(man.headers.get('content-type') || '') &&
+        /^#EXTM3U/.test(man.text), man.status + ' ' + (man.headers.get('content-type') || ''));
+      ok('and every address inside it points back at umbra',
+        man.text.split('\n').filter((l) => l && !l.startsWith('#'))
+          .every((l) => l.startsWith('/~umbra/')),
+        man.text.split('\n').filter((l) => l && !l.startsWith('#'))[0] || 'none');
+
+      const seg = man.text.split('\n').find((l) => l.startsWith('/~umbra/m/'));
+      if (seg) {
+        const sres = await call(seg, { headers: { range: 'bytes=0-99' } });
+        ok('a segment named by the manifest streams through the media wire',
+          sres.status === 206 && sres.bytes.length === 100, sres.status + '/' + sres.bytes.length);
+      }
+      /* the nested playlist is itself rewritten, not served raw */
+      const sub = man.text.split('\n').find((l) => l.startsWith('/~umbra/h/'));
+      if (sub) {
+        const inner = await call(sub);
+        ok('a variant playlist is rewritten in turn, keys and all',
+          inner.status === 200 && /#EXT-X-KEY:[^\n]*URI="\/~umbra\/m\//.test(inner.text) &&
+          inner.text.split('\n').filter((l) => l && !l.startsWith('#'))
+            .every((l) => l.startsWith('/~umbra/m/')),
+          inner.text.split('\n').filter((l) => l && !l.startsWith('#'))[0] || 'none');
+      }
+    }
+  }
+
   /* The other half of that coin. A backend that answers 200 with an empty
      format list has failed the viewer exactly as completely as one that
      times out, but failover only ever noticed throws — so the empty answer

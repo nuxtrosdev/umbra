@@ -16,6 +16,8 @@
  *   f  form-post     forwards method + body, then behaves like `d`
  *   r  raw           byte-exact passthrough (downloads)
  *   c  capsule       locally generated Umbra document (redirect notice, player...)
+ *   h  hls manifest  m3u8 whose every address is rewritten onto the wire
+ *                    (not in MODES: it is parsed, not relayed)
  *
  * A token is `base64url(json).<hmac8>`. It is bound to a session + tab, so a
  * token captured from one tab cannot be replayed by a third party as an

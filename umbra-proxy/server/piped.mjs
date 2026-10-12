@@ -357,7 +357,10 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
     audio: audio.slice(0, 3).map(wire),
     captions,
     hls: s.hls || null,
-    hlsWire: s.hls ? href(ctx, s.hls, 'm') : null,
+    /* mode h, not m: a playlist whose segment urls were not rewritten sends
+       the browser to googlevideo directly — off the wire, and refused there
+       anyway, since those urls are signed for the extracting address. */
+    hlsWire: s.hls ? href(ctx, s.hls, 'h') : null,
     related: (Array.isArray(s.relatedStreams) ? s.relatedStreams : [])
       .filter((r) => videoIdOf(r.url))
       .slice(0, 12)

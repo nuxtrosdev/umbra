@@ -13,6 +13,10 @@
   catch (e) { host.innerHTML = '<p class="warn">player payload unreadable</p>'; return; }
 
   var muxed = d.muxed || [], vids = d.video || [], auds = d.auds || d.audio || [], caps = d.captions || [];
+  /* A manifest is a playable answer too. YouTube hands one to addresses it
+     will not give individual formats to, so for a gated machine this is
+     sometimes the only thing on offer. */
+  var hlsWire = d.hlsWire || null;
   /* Opening mode. Native streams win when they exist — they are proxied, so
      nothing leaves the boundary. When extraction produced nothing, the
      proxied embed is a black rectangle on a scored address and the direct
@@ -20,7 +24,9 @@
      proxied embed one click away. */
   var fallback = d.directEmbed ? 'direct' : 'embed';
   var state = {
-    mode: d.ok ? (muxed.length ? 'muxed' : (vids.length ? 'dual' : fallback)) : fallback,
+    mode: d.ok
+      ? (muxed.length ? 'muxed' : (vids.length ? 'dual' : (hlsWire ? 'hls' : fallback)))
+      : (hlsWire ? 'hls' : fallback),
     vi: 0, ai: 0, mi: 0,
   };
 
@@ -249,6 +255,54 @@
     }, 6000);
   }
 
+  /* Playing a manifest.
+   *
+   * Safari (and iOS, where it is the only option) plays HLS natively, so it
+   * is asked first and nothing is downloaded. Everywhere else the browser
+   * needs Media Source Extensions driven by hls.js, which Umbra serves from
+   * node_modules if the operator installed it. If it is absent the player
+   * says exactly that rather than showing another black rectangle.
+   *
+   * Every url inside the manifest has already been re-anchored onto the
+   * wire by the server, so segments travel the same path as any other
+   * media: same origin, Range-aware, nothing requested from googlevideo by
+   * the browser. */
+  var hlsEngine = null;
+  function startHls() {
+    if (hlsEngine) { try { hlsEngine.destroy(); } catch (e) {} hlsEngine = null; }
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = hlsWire;
+      video.__umbraVia = 'wire';
+      readout.textContent = 'hls manifest, played natively by this browser — segments via /~umbra/m';
+      return;
+    }
+    if (window.Hls && window.Hls.isSupported()) { attachHls(); return; }
+    var sc = document.createElement('script');
+    sc.src = '/~umbra/a/hls.js';
+    sc.onload = function () {
+      if (window.Hls && window.Hls.isSupported()) attachHls();
+      else readout.textContent = 'this browser cannot play an adaptive manifest (no MSE support).';
+    };
+    sc.onerror = function () {
+      readout.textContent = 'this video is only offered as an HLS manifest, and hls.js is not installed — '
+        + 'run "npm i hls.js" beside Umbra and reload, or use the proxied embed.';
+    };
+    document.head.appendChild(sc);
+  }
+  function attachHls() {
+    hlsEngine = new window.Hls({ enableWorker: false });
+    hlsEngine.on(window.Hls.Events.ERROR, function (_e, data) {
+      if (data && data.fatal) {
+        readout.textContent = 'the manifest failed: ' + (data.details || data.type) +
+          ' — youtube may have expired it, or the segments were refused.';
+      }
+    });
+    hlsEngine.loadSource(hlsWire);
+    hlsEngine.attachMedia(video);
+    video.__umbraVia = 'wire';
+    readout.textContent = 'hls manifest via hls.js — every segment through /~umbra/m';
+  }
+
   function mount() {
     stage.innerHTML = '';
     ctl.innerHTML = '';
@@ -349,7 +403,11 @@
       return;
     }
 
-    if (state.mode === 'muxed') {
+    if (state.mode === 'hls') {
+      stage.appendChild(video);
+      ctl.appendChild(btn('hls manifest (adaptive)', 'go', function () {}));
+      startHls();
+    } else if (state.mode === 'muxed') {
       var m = muxed[state.mi] || muxed[0];
       setSrc(video, m);
       /* `removeAttribute('muted')` does not unmute anything. The content
@@ -381,6 +439,9 @@
       mount();
       video.addEventListener('loadedmetadata', function once() { video.currentTime = wasTime; video.removeEventListener('loadedmetadata', once); });
     }));
+    if (hlsWire && state.mode !== 'hls') {
+      ctl.appendChild(btn('hls manifest', '', function () { state.mode = 'hls'; mount(); }));
+    }
     ctl.appendChild(btn('proxied embed', '', function () { state.mode = 'embed'; mount(); }));
     ctl.appendChild(selectOf(['0.5', '0.75', '1', '1.25', '1.5', '2'], 'speed', function (i) { video.playbackRate = [0.5, 0.75, 1, 1.25, 1.5, 2][i]; }));
     if (caps.length) {

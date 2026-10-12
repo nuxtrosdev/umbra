@@ -39,6 +39,7 @@ import * as pipedLocal from './piped-local.mjs';
 import * as ytApi from './api-youtube.mjs';
 import * as pm from './provider-manager.mjs';
 import { modeFrom, mediaSrcFor, expiredMediaUrl } from './media-egress.mjs';
+import { rewriteManifest } from './hls.mjs';
 import { verdict as ytVerdict } from './verdict.mjs';
 import * as tubeView from './tube-view.mjs';
 import { TUBE_CSS, ADMIN_CSS, providersDoc, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
@@ -1183,8 +1184,30 @@ const STATIC = {
      without a per-frame token: it carries no data, only the rewriter */
   '/~umbra/a/worker-shim.js': ['worker-shim.js', 'application/javascript; charset=utf-8'],
   '/~umbra/player.js': ['player.js', 'application/javascript; charset=utf-8'],
+  '/~umbra/a/hls.js': ['hls.js', 'application/javascript; charset=utf-8'],
 };
+/* hls.js, if the operator installed it.
+   
+   Served from node_modules rather than vendored: a 200 KB third-party
+   bundle in the tree would have to be audited and updated by hand, and the
+   player degrades honestly without it (Safari plays HLS natively; every
+   other browser is told why it cannot). */
+function hlsBundle() {
+  for (const rel of ['hls.js/dist/hls.min.js', 'hls.js/dist/hls.js']) {
+    try { return fs.readFileSync(path.join(HERE, '..', '..', 'node_modules', rel)); } catch { /* next */ }
+  }
+  return null;
+}
+
 function serveStatic(res, key, sess = null) {
+  if (key === '/~umbra/a/hls.js') {
+    const b = hlsBundle();
+    if (!b) {
+      return send(res, 404, { 'content-type': 'application/javascript; charset=utf-8' },
+        '/* hls.js is not installed: npm i hls.js */');
+    }
+    return send(res, 200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'max-age=3600' }, b);
+  }
   const [file, ct] = STATIC[key];
   let body;
   try { body = fs.readFileSync(path.join(PUB, file)); } catch { return notFound(res, key); }
@@ -1702,6 +1725,33 @@ async function route(req, res) {
       mopts.ct = req.headers['content-type'] || null;
     }
     return serve(ctx, req, res, mopts);
+  }
+
+  /* ---- hls manifests: rewritten so segments stay on the wire ---- */
+  if (head === 'h') {
+    const t = decodeToken(seg[1]);
+    if (!t || t.s !== s.id || t.g !== s.gen) return fail(res, 403, 'bad token', 'manifest request refused');
+    const ctx = mkCtx(t.u, 'm', t.t);
+    try {
+      const up = await upstream(t.u, {
+        headers: { accept: '*/*', 'user-agent': UA, cookie: s.cookieJar.header(t.u) },
+      });
+      if (up.status >= 400) {
+        return fail(res, up.status, 'the manifest was refused upstream',
+          'youtube answered ' + up.status + ' for this playlist');
+      }
+      const raw = (await readBody(up.res, { limit: 4 * 1024 * 1024 })).toString('utf8');
+      const body = rewriteManifest(raw, up.url || t.u, ctx);
+      return send(res, 200, {
+        'content-type': 'application/vnd.apple.mpegurl',
+        'access-control-allow-origin': origin,
+        'cache-control': 'private, max-age=5',
+        ...metaHeaders({ kind: 'hls-manifest', url: up.url || t.u, tab: ctx.tabId }),
+      }, body);
+    } catch (e) {
+      return fail(res, 502, 'the manifest could not be fetched',
+        String((e && e.message) || e).slice(0, 160));
+    }
   }
 
   /* ---- caption conversion: json3 -> WebVTT, same-origin bytes ---- */

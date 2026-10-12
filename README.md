@@ -53,6 +53,24 @@ A request that already carries a BotGuard proof-of-origin token is **never**
 touched under either setting, and the token is harvested for the server-side
 ladder.
 
+## HLS: the answer a gated address often gets
+
+YouTube increasingly hands out an HLS manifest instead of individual formats
+— sometimes it is the *only* thing it will give a flagged machine. A manifest
+is a list of addresses, so it cannot simply be relayed: served unchanged, the
+browser fetches every segment straight from googlevideo, outside the proxy and
+refused there anyway (those urls are signed for the address that extracted
+them).
+
+Mode `h` rewrites one. Nested playlists stay manifests (rewritten in turn),
+segments, keys and init segments become `m` wire urls, and every tag, comment
+and timing line is copied through untouched. Playback is then native on Safari,
+or via hls.js elsewhere:
+
+    npm i hls.js        # optional; Umbra serves it from node_modules
+
+Without it the player says so plainly instead of showing a black rectangle.
+
 ## The media wire (`/~umbra/m/<token>`)
 
 What it already does, point by point, because these are the details that make
