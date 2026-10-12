@@ -47,10 +47,54 @@ export async function available() {
 }
 export const enabled = () => present !== false;
 
+/**
+ * Everything this process knows that yt-dlp does not.
+ *
+ * yt-dlp has the best-maintained client ladder and signature handling of
+ * anything here, but it is a separate program: it does not see the PO token
+ * we minted, the cookies the operator configured, or the client order they
+ * chose. Passing them across is the difference between "yt-dlp is
+ * installed" and "yt-dlp can get what nothing else could".
+ *
+ * Shapes are yt-dlp's own:
+ *   --extractor-args "youtube:player_client=tv,web_safari;po_token=web.gvs+XXX"
+ */
+async function extras(videoId) {
+  const out = [];
+  const ea = [];
+  const clients = String(process.env.UMBRA_YTDLP_CLIENTS || '').trim();
+  if (clients) ea.push('player_client=' + clients);
+  try {
+    const { getPoToken } = await import('../potoken.mjs');
+    const tok = await getPoToken('');
+    /* gvs = the token the media server wants; this is the binding yt-dlp
+       documents for a token minted outside it. */
+    if (tok) ea.push('po_token=web.gvs+' + tok);
+  } catch { /* no token is the normal case, not an error */ }
+  if (ea.length) out.push('--extractor-args', 'youtube:' + ea.join(';'));
+
+  const cookies = String(process.env.UMBRA_YT_COOKIES || '').trim();
+  if (cookies) out.push('--add-header', 'Cookie:' + cookies);
+  const cookieFile = String(process.env.UMBRA_YTDLP_COOKIES_FILE || '').trim();
+  if (cookieFile) out.push('--cookies', cookieFile);
+  const proxy = String(process.env.UMBRA_YTDLP_PROXY || '').trim();
+  if (proxy) out.push('--proxy', proxy);
+  return out;
+}
+
 function run(args) {
   return new Promise((resolve, reject) => {
     execFile(BIN, args, { timeout: TIMEOUT, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(String(stderr || err.message).split('\n')[0].slice(0, 200)));
+      if (err) {
+        const first = String(stderr || err.message).split('\n')
+          .map((l) => l.trim()).filter(Boolean)
+          /* yt-dlp's useful sentence is rarely the first line */
+          .find((l) => /^(ERROR|WARNING)/i.test(l)) || String(stderr || err.message).split('\n')[0];
+        const msg = /ENOENT/.test(String(err.message))
+          ? `yt-dlp is not installed — "pipx install yt-dlp" (or pip install -U yt-dlp), then restart`
+          : String(first).slice(0, 200);
+        return reject(new Error(msg));
+      }
       try { resolve(JSON.parse(stdout)); } catch { reject(new Error('yt-dlp output was not json')); }
     });
   });
@@ -80,7 +124,8 @@ function vidFrom(j) {
 
 export async function getVideo(videoId) {
   return pool.run(async () => {
-    const j = await run([...BASE_ARGS, 'https://www.youtube.com/watch?v=' + videoId]);
+    const j = await run([...BASE_ARGS, ...(await extras(videoId)),
+      'https://www.youtube.com/watch?v=' + videoId]);
     const v = vidFrom(j);
     if (!v) throw new Error('video payload failed validation');
     return v;
@@ -126,7 +171,8 @@ export async function getPlaylist(playlistId) {
 
 export async function getStreams(videoId) {
   return pool.run(async () => {
-    const j = await run([...BASE_ARGS, 'https://www.youtube.com/watch?v=' + videoId]);
+    const j = await run([...BASE_ARGS, ...(await extras(videoId)),
+      'https://www.youtube.com/watch?v=' + videoId]);
     const fmts = j.formats || [];
     const s = T.streamInfo({
       id: j.id || videoId,
@@ -160,7 +206,9 @@ export async function healthCheck() {
   const ok = await available();
   return ok
     ? { provider: id, healthy: true, instance: self.id }
-    : { provider: id, healthy: false, disabled: true, reason: `${BIN} not on PATH` };
+    : { provider: id, healthy: false, disabled: true,
+        reason: `${BIN} not on PATH — install it with "pipx install yt-dlp" to add the ` +
+          'best-maintained extractor to the chain' };
 }
 
 export function report() {

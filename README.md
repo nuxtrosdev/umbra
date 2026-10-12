@@ -11,6 +11,31 @@ npm test             # offline suite, no network required
 
 Node 18+. No dependencies.
 
+## When YouTube withholds the URLs (`yt-dlp`, PO tokens)
+
+Three different things look identical from a black player, and the probe
+(`npm run probe <videoId>`) separates them:
+
+* **the video is gone** — every client answers with the same refusal. Nothing
+  fixes this.
+* **the URLs are withheld** — requests are answered, formats come back empty or
+  undecipherable, and the watch page reports `LOGIN_REQUIRED`. This is a
+  judgement about the address, and a proof-of-origin token is the answer.
+* **extraction is broken** — some backends work and others do not.
+
+For the middle case, in rough order of effort:
+
+```
+pipx install yt-dlp          # adds the best-maintained extractor to the chain
+npx -y bgutil-ytdlp-pot-provider
+UMBRA_POT_PROVIDER_URL=http://127.0.0.1:4416 npm start
+```
+
+Umbra hands yt-dlp what it cannot know on its own: a minted PO token
+(`--extractor-args youtube:po_token=web.gvs+…`), `UMBRA_YT_COOKIES`, a client
+order via `UMBRA_YTDLP_CLIENTS`, and `UMBRA_YTDLP_PROXY` if egress needs to
+leave by another door.
+
 ## Who pays for the video bytes (`UMBRA_MEDIA_EGRESS`)
 
 By default every byte of every stream is relayed by this origin: the visitor's
