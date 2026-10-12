@@ -166,6 +166,14 @@ const DIRECT_HOSTS = 'https://www.youtube-nocookie.com https://www.youtube.com';
 const MEDIA_EGRESS = modeFrom(process.env.UMBRA_MEDIA_EGRESS);
 export const mediaEgress = () => MEDIA_EGRESS;
 const MEDIA_SRC = mediaSrcFor(MEDIA_EGRESS);
+/* How to treat /youtubei/v1/* POSTs minted by page JavaScript.
+     'page'  keep the page's own client identity, add only visitorData and
+             the content acknowledgements (default — a WEB player can only
+             read a WEB response);
+     'all'   impose the server ladder's identity, as Umbra did until the
+             proxied player was found to go black on the result. */
+const IT_REWRITE = (process.env.UMBRA_IT_REWRITE || 'page').toLowerCase();
+
 const CSP_DOC = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
@@ -570,20 +578,41 @@ async function serve(ctx, req, res, opts = {}) {
         const seen = readInnertubeIdentity(src);
         if (seen && seen.poToken) pot.observe(seen);
         const vis = await getVisitorData({ cookie: headers.cookie || '' });
+        const keep = IT_REWRITE !== 'all';
         const rewritten = rewriteInnertubeBody(src, {
           client: IT_LADDER[0],
           visitorData: vis.value,
+          keepClient: keep,
         });
+        if (keep) {
+          /* The page's request must stay coherent with the page. Its own
+             client headers were being dropped on the floor here and
+             replaced with ours; YouTube compares them against the body it
+             is sent, so a mismatch is worse than sending nothing. Forward
+             what the browser actually set, and nothing it did not. */
+          for (const k of ['x-youtube-client-name', 'x-youtube-client-version',
+            'x-goog-visitor-id', 'x-goog-authuser', 'x-origin', 'x-youtube-bootstrap-logged-in']) {
+            const v = req.headers[k];
+            if (v) headers[k] = String(v);
+          }
+          headers['content-type'] = upCt || 'application/json';
+          try {
+            headers.origin = new URL(url).origin;
+            headers.referer = ctx.referrer || (new URL(url).origin + '/');
+          } catch { /* keep whatever was there */ }
+        }
         if (rewritten) {
           upBody = rewritten;
           upCt = 'application/json';
-          Object.assign(headers, itHeaders(IT_LADDER[0], {
-            visitorData: vis.value,
-            videoId: '',
-            cookie: headers.cookie || '',
-          }));
-          headers['content-length'] = String(upBody.length);
+          if (!keep) {
+            Object.assign(headers, itHeaders(IT_LADDER[0], {
+              visitorData: vis.value,
+              videoId: '',
+              cookie: headers.cookie || '',
+            }));
+          }
         }
+        if (upBody) headers['content-length'] = String(upBody.length);
       } catch {
         /* identity minting is best-effort; forward the original body */
       }

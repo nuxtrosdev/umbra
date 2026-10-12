@@ -763,6 +763,24 @@ const server = http.createServer((req, res) => {
         poToken: (body.serviceIntegrityDimensions || {}).poToken || null,
         cookie: req.headers.cookie || null,
       });
+      /* Client-shaped answers, because YouTube's are.
+         
+         This mock used to hand the same web-shaped playerResponse to every
+         caller, which made one whole class of bug invisible: if Umbra
+         rewrote a page's request to a different client, the page still got
+         something it could read here and nothing failed. YouTube does not
+         work that way — a TVHTML5 request is answered with a TV surface,
+         and a WEB player handed that goes black. So answer in the shape
+         that was asked for. */
+      if (/TVHTML5/i.test(String(client.clientName || ''))) {
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+          responseContext: { serviceTrackingParams: [] },
+          playabilityStatus: { status: 'OK' },
+          contents: { tvBrowseRenderer: { content: { tvSurfaceContentRenderer: {} } } },
+          videoDetails: { videoId: body.videoId, title: 'TV surface', lengthSeconds: '212' },
+        }));
+      }
+
       const pr = playerResponse(base);
       /* one video id serves the ciphered shape, so both the plain and the
          deciphered paths are exercised by the same suite */

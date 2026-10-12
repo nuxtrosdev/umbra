@@ -1208,6 +1208,38 @@ async function wire() {
       JSON.parse((await call('/~umbra/ytj?v=' + VID + '&t=' + tn.tab)).text).poToken === 'attached',
       JSON.parse((await call('/~umbra/ytj?v=' + VID + '&t=' + tn.tab)).text).poToken);
 
+    /* The same page, one step earlier: BotGuard has not finished, so the
+       player's first request carries no proof yet. Umbra used to answer
+       that by swapping in the server ladder's TVHTML5 identity — and the
+       WEB player that asked got a television's answer, which it cannot
+       read. A black frame, caused by us, on top of YouTube's own refusal. */
+    {
+      const rpc2 = await mint(MOCK + '/youtubei/v1/player', 'x', tn.tab);
+      const res2 = await call(rpc2.href, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-youtube-client-name': '56',
+          'x-youtube-client-version': '1.20260101.00.00',
+        },
+        body: JSON.stringify({
+          context: { client: { clientName: 'WEB_EMBEDDED_PLAYER', clientVersion: '1.20260101.00.00' } },
+          videoId: VID,
+        }),
+      });
+      const hs = (await (await fetch(`${MOCK}/__hits`)).json()).filter((h) => h.path === '/youtubei/v1/player');
+      const last = hs[hs.length - 1];
+      ok('a page request with no proof yet keeps the page\u2019s own client identity',
+        last.clientName === 'WEB_EMBEDDED_PLAYER' && last.clientNameHeader === '56',
+        last.clientName + '/' + last.clientNameHeader);
+      ok('and the answer it gets back is one its own player can read',
+        res2.status === 200 && /streamingData/.test(res2.text) && !/tvBrowseRenderer/.test(res2.text),
+        res2.status + ' ' + res2.text.slice(0, 60));
+      ok('a visitor identity is still supplied when the page has none',
+        !!last.visitorData);
+    }
+
+
     /* ---- the black rectangle, explained ----
        When the embed's player request comes back refused, the frame cannot
        say so across the document boundary and the operator is left looking
@@ -1531,6 +1563,38 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* Audio that exists but cannot be heard. */
+  {
+    const src = fs.readFileSync(path.join(HERE, '..', 'public', 'player.js'), 'utf8');
+    ok('muxed mode unmutes the element itself, not just the attribute',
+      /video\.muted = false/.test(src) && !/video\.removeAttribute\('muted'\)/.test(src),
+      'muted handling');
+    ok('silence is explained rather than left to be guessed',
+      /carries no audio track/.test(src) && /webkitAudioDecodedByteCount/.test(src));
+  }
+
+  /* The body rewriter itself, both ways round. */
+  {
+    const IT = await import('../server/innertube.mjs');
+    const pageBody = Buffer.from(JSON.stringify({
+      context: { client: { clientName: 'WEB', clientVersion: '2.2026' } }, videoId: 'x',
+    }));
+    const kept = JSON.parse(IT.rewriteInnertubeBody(pageBody, { visitorData: 'V1', keepClient: true }));
+    ok('keepClient adds what helps and changes nothing that identifies the caller',
+      kept.context.client.clientName === 'WEB' && kept.context.client.visitorData === 'V1' &&
+      kept.contentCheckOk === true,
+      JSON.stringify(kept.context.client));
+    const swapped = JSON.parse(IT.rewriteInnertubeBody(pageBody, { client: 'tv', visitorData: 'V1' }));
+    ok('the old behaviour is still available for the server\u2019s own requests',
+      swapped.context.client.clientName === 'TVHTML5');
+    const proven = Buffer.from(JSON.stringify({
+      context: { client: { clientName: 'WEB' } }, serviceIntegrityDimensions: { poToken: 'T' },
+    }));
+    ok('a request carrying real proof is never touched, either way',
+      IT.rewriteInnertubeBody(proven, { keepClient: true }) === null &&
+      IT.rewriteInnertubeBody(proven, { client: 'tv' }) === null);
+  }
+
   /* "Do not assume a url returned by the extractor is permanently valid."
      googlevideo signs an `expire` into every media url; past it the CDN
      403s everyone, and a long video outlives its own url mid-playback. */

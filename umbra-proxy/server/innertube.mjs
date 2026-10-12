@@ -449,7 +449,7 @@ export function readInnertubeIdentity(buf) {
   };
 }
 
-export function rewriteInnertubeBody(buf, { client = LADDER[0], visitorData = '' } = {}) {
+export function rewriteInnertubeBody(buf, { client = LADDER[0], visitorData = '', keepClient = false } = {}) {
   if (!buf || !buf.length || buf.length > 4 * 1024 * 1024) return null;
   let j;
   try {
@@ -464,6 +464,31 @@ export function rewriteInnertubeBody(buf, { client = LADDER[0], visitorData = ''
      proof and turn the most credible request Umbra ever gets into a forgery.
      Leave it exactly as the page built it. */
   if ((j.serviceIntegrityDimensions || {}).poToken) return null;
+
+  /* Keeping the page's own client identity.
+     
+     Imposing our ladder's identity on a request made by YouTube's *own*
+     JavaScript was a mistake with two heads. The response comes back
+     shaped for the client we claimed — a TVHTML5 player config, say — and
+     the WEB player that asked cannot read it, so the frame goes black.
+     And YouTube sees one session in which a Chrome document loads and
+     then a television asks for the player, which is exactly the
+     incoherence an anti-automation system looks for.
+     
+     So when the request was minted by a real page, leave the client alone
+     and add only the two things that help and cannot contradict it: a
+     visitor id if the page has none, and the content/racy acknowledgements
+     that unblock age-gated embeds. */
+  if (keepClient) {
+    const c = (j.context && j.context.client) || null;
+    if (!c || !c.clientName) return null;        // not page-shaped; leave it
+    let touched = false;
+    if (visitorData && !c.visitorData) { c.visitorData = visitorData; touched = true; }
+    if (j.contentCheckOk !== true) { j.contentCheckOk = true; touched = true; }
+    if (j.racyCheckOk !== true) { j.racyCheckOk = true; touched = true; }
+    return touched ? Buffer.from(JSON.stringify(j), 'utf8') : null;
+  }
+
   const ctxObj = buildContext(client, { visitorData });
   j.context = {
     ...j.context,

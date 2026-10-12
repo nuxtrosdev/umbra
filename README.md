@@ -36,6 +36,23 @@ Umbra hands yt-dlp what it cannot know on its own: a minted PO token
 order via `UMBRA_YTDLP_CLIENTS`, and `UMBRA_YTDLP_PROXY` if egress needs to
 leave by another door.
 
+## In-page InnerTube requests (`UMBRA_IT_REWRITE`)
+
+When YouTube's own JavaScript runs inside a proxied document it mints
+`/youtubei/v1/*` POSTs. Umbra sees them, and what it does with them matters:
+
+* `page` (default) — keep the page's own client identity and forward its
+  `x-youtube-client-*` headers, adding only a visitor id if it has none and the
+  content/racy acknowledgements. A WEB player can only read a WEB answer.
+* `all` — impose the server ladder's identity (what Umbra did previously).
+  Useful for comparison; it makes YouTube's own player unable to parse the
+  reply, and makes the session incoherent (a Chrome document followed by a
+  television asking for the player).
+
+A request that already carries a BotGuard proof-of-origin token is **never**
+touched under either setting, and the token is harvested for the server-side
+ladder.
+
 ## The media wire (`/~umbra/m/<token>`)
 
 What it already does, point by point, because these are the details that make

@@ -109,6 +109,36 @@
           : 'bytes straight from googlevideo · google sees your address, this origin relays nothing');
       readout.textContent = out.join('  |  ');
     });
+    /* Whether sound actually exists in what is playing.
+       
+       "The video plays but there is no audio" has several causes that look
+       identical from the sofa: a muted element, a muxed format that turned
+       out to carry no audio track, or a browser that decoded the video and
+       not the codec beside it. The element knows which. Ask it once the
+       metadata is in, and print the answer instead of leaving it to be
+       guessed. */
+    video.addEventListener('loadedmetadata', function () {
+      setTimeout(function () {
+        if (state.mode !== 'muxed') return;
+        var tracks = video.audioTracks ? video.audioTracks.length : null;
+        var decoded = typeof video.webkitAudioDecodedByteCount === 'number'
+          ? video.webkitAudioDecodedByteCount : null;
+        var hasAudio = video.mozHasAudio === true || (tracks !== null && tracks > 0) ||
+          (decoded !== null && decoded > 0);
+        var silent = (tracks === 0) || (decoded === 0 && video.currentTime > 0.5);
+        if (video.muted || video.volume === 0) {
+          readout.textContent = 'the player was muted — unmuting. If it stays silent, say so.';
+          video.muted = false; video.volume = 1;
+          return;
+        }
+        if (silent && !hasAudio) {
+          readout.textContent = 'this muxed format (itag ' + ((muxed[state.mi] || {}).itag || '?') +
+            ') carries no audio track — youtube withheld the audio formats for this address' +
+            (auds.length ? '; switch to dual track for sound.' : ', so there is no audio to pair with it.');
+        }
+      }, 1200);
+    });
+
     video.onerror = function () {
       if (onSourceError(video, 'video')) return;
       readout.textContent = 'this browser cannot decode the chosen track (' + (video.error ? ['ABORTED', 'NETWORK', 'DECODE', 'SRC_NOT_SUPPORTED', 'MEDIA_ERR'][video.error.code - 1] : '?') + ') — switch codec/quality above, or use the proxied embed.';
@@ -322,7 +352,13 @@
     if (state.mode === 'muxed') {
       var m = muxed[state.mi] || muxed[0];
       setSrc(video, m);
-      video.removeAttribute('muted');
+      /* `removeAttribute('muted')` does not unmute anything. The content
+         attribute only sets the *default*; once dual-track mode has
+         assigned the muted IDL property, the element stays silent through
+         every later mount — including this one. One visit to dual track
+         and back was enough to lose audio for the rest of the session. */
+      video.muted = false;
+      video.volume = 1;
       stage.appendChild(video);
       ctl.appendChild(btn('muxed stream (video+audio)', 'go', function () {}));
       if (muxed.length > 1) ctl.appendChild(selectOf(muxed.map(function (x) { return (x.label || x.quality) + ' · ' + (x.codecs || '').slice(0, 12) + (x.contentLength ? ' · ' + Math.round(x.contentLength / 1048576) + 'MB' : ''); }), 'quality', function (i) { state.mi = i; video.pause(); setSrc(video, muxed[i]); video.load(); }));
