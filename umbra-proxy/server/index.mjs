@@ -38,6 +38,7 @@ import * as piped from './piped.mjs';
 import * as pipedLocal from './piped-local.mjs';
 import * as ytApi from './api-youtube.mjs';
 import * as pm from './provider-manager.mjs';
+import { verdict as ytVerdict } from './verdict.mjs';
 import * as tubeView from './tube-view.mjs';
 import { TUBE_CSS, ADMIN_CSS, providersDoc, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
 
@@ -1426,6 +1427,13 @@ async function route(req, res) {
       if (streamsErr) {
         payload.ok = false;
         payload.reason = String(streamsErr.message || streamsErr).slice(0, 200);
+        /* Why it failed changes what the page should say. "Every provider
+           failed" reads as "this proxy is broken", and for a video YouTube
+           has retired that is simply untrue — the operator deserves the
+           difference between "we were refused" and "there is nothing to
+           serve". */
+        payload.verdict = ytVerdict((streamsErr.tried) || [],
+          { hasPoToken: !!pot.inspect().configured, hasCookies: !!process.env.UMBRA_YT_COOKIES }) || null;
         payload.tried = [
           ...(streamsErr.tried || []).map((t) => ({ instance: t.provider || t.instance || '?', note: t.note || '' })),
           ...(payload.tried || []),

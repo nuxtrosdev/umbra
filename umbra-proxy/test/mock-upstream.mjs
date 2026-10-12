@@ -346,6 +346,7 @@ const server = http.createServer((req, res) => {
     /* see the Piped mock: hls-only has to be hls-only everywhere */
     if (rest === 'videos/HlsOnly1234') return send(res, 404, { 'content-type': 'text/plain' }, 'not found');
     if (rest === 'videos/EmptyFmts12') return send(res, 404, { 'content-type': 'text/plain' }, 'not found');
+    if (rest === 'videos/DeadLive123') return send(res, 404, { 'content-type': 'text/plain' }, 'not found');
     if (rest === 'search') {
       if (u.searchParams.get('q') === '__invdown__') return send(res, 503, { 'content-type': 'text/plain' }, 'nope');
       return J([
@@ -416,6 +417,7 @@ const server = http.createServer((req, res) => {
     if (p.slice(9) === 'HlsOnly1234') return send(res, 404, { 'content-type': 'text/plain' }, 'not found');
     /* The failure the user actually hit: a Piped instance answering 200 with
        a complete-looking payload and empty stream arrays. */
+    if (p.slice(9) === 'DeadLive123') return send(res, 404, { 'content-type': 'text/plain' }, 'not found');
     if (p.slice(9) === 'EmptyFmts12') {
       return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
         title: 'Mock Piped Video', uploader: 'Mock Channel', uploaderUrl: '/channel/UCmock',
@@ -506,6 +508,12 @@ const server = http.createServer((req, res) => {
     }
     /* hls-only is hls-only on every surface, the watch page included; the
        empty-format video cannot be scraped off the page either */
+    if (u.searchParams.get('v') === 'DeadLive123') {
+      return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },
+        '<!doctype html><html><body><script>var ytInitialPlayerResponse = ' +
+        JSON.stringify({ playabilityStatus: { status: 'UNPLAYABLE', reason: 'This live stream recording is not available.' } }) +
+        ';</script></body></html>');
+    }
     if (u.searchParams.get('v') === 'EmptyFmts12') {
       return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },
         '<!doctype html><html><body><div>no player response here</div></body></html>');
@@ -768,6 +776,16 @@ const server = http.createServer((req, res) => {
         const only = JSON.parse(JSON.stringify(pr));
         only.streamingData = { expiresInSeconds: '21540', hlsManifestUrl: 'http://127.0.0.1:' + PORT + '/hls/HlsOnly1234.m3u8' };
         return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(only));
+      }
+      /* An ended livestream with no published recording. YouTube keeps the
+         page, answers every client, and serves video to nobody — its own
+         site included. No extractor can fix it, so Umbra must say so
+         instead of blaming its own address. */
+      if (body.videoId === 'DeadLive123') {
+        return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+          playabilityStatus: { status: 'UNPLAYABLE', reason: 'This live stream recording is not available.' },
+          videoDetails: { videoId: 'DeadLive123', title: 'An Ended Livestream', author: 'Mock Channel', lengthSeconds: '0' },
+        }));
       }
       /* The quiet failure: HTTP 200, a playable video, and not one format.
          YouTube answers this way often enough (and so do tired instances),

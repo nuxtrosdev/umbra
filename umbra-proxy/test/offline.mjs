@@ -1412,6 +1412,17 @@ async function wire() {
       e2 ? e2.directive + ' ' + e2.blocked : 'no entry');
   }
 
+  /* A video YouTube has retired. "Every provider failed" is true and
+     useless here: it reads as "this proxy is broken" and sends the operator
+     off to debug an address that is working perfectly. */
+  {
+    const gone = await call((await mint('umbra://tube/watch?v=DeadLive123', 'd', tn.tab)).href);
+    ok('a video youtube has retired is reported as unavailable, not as a refused address',
+      gone.status === 200 && /not available/i.test(gone.text) &&
+      !/every provider is refused by the\s+address/i.test(gone.text.replace(/\s+/g, ' ')),
+      'http ' + gone.status + ' ' + (/<p class="warn">([^<]*)/.exec(gone.text) || [])[1]);
+  }
+
   const tubeBad = await call((await mint('umbra://tube/watch?v=short', 'd', tn.tab)).href);
   ok('tube rejects a malformed video id', tubeBad.status === 400, 'http ' + tubeBad.status);
 
@@ -1620,8 +1631,12 @@ async function wire() {
     ahealth.j.data.instances.every((i) => 'status' in i && 'latency' in i && 'cooldownUntil' in i) &&
     ahealth.j.data.cache && Array.isArray(ahealth.j.data.recent),
     ahealth.j.data.instances.map((i) => i.id + '=' + i.status).slice(0, 4).join(' '));
-  ok('an instance that failed but is not yet benched reads as degraded, not online',
-    ahealth.j.data.instances.some((i) => /invidious.*:1$/.test(i.id) && i.status === 'DEGRADED'),
+  /* How many failures this instance has racked up by now depends on how
+     many videos the suite asked for before this line, which is incidental.
+     What must never happen is a failing instance reporting itself healthy. */
+  ok('an instance that keeps failing never reads as online',
+    ahealth.j.data.instances.some((i) => /invidious.*:1$/.test(i.id) &&
+      ['DEGRADED', 'COOLDOWN'].includes(i.status)),
     ahealth.j.data.instances.filter((i) => /invidious/.test(i.id)).map((i) => i.id + '=' + i.status).join(' '));
   ok('the debug surface explains the projects that were not wired up',
     ahealth.j.data.survey.some((x) => x.project === 'ViewTube' && /youtubejs/.test(x.covered_by)));

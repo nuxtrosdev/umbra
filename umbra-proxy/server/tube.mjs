@@ -150,8 +150,16 @@ export function watchDoc(p, info, cmts) {
     ? `<div class="tbar"><span class="chip">${p.muxed.length} muxed</span><span class="chip">${p.video.length} video</span>
        <span class="chip">${p.audio.length} audio</span><span class="chip">${p.captions.length} caption track(s)</span>
        ${p.isLive ? '<span class="chip warn">live</span>' : ''}</div>`
-    : `<p class="warn">${esc(p.reason || 'no playable streams')}</p>
-       ${p.directEmbed
+    : `<p class="warn">${p.verdict && p.verdict.kind === 'unavailable'
+        ? esc(p.verdict.headline) : esc(p.reason || 'no playable streams')}</p>
+       ${p.verdict && p.verdict.kind === 'unavailable'
+      /* Not our failure, and saying "every provider is refused by this
+         address" here would be a lie that sends people debugging a proxy
+         that is working. Ended livestreams with no published recording are
+         the common case: YouTube keeps the page and serves no video to
+         anybody, its own site included. */
+      ? `<p class="muted">${esc(p.verdict.detail)}</p>`
+      : p.directEmbed
       ? `<p class="muted">No backend could extract this one — every provider is refused by the
          address this server runs on. The player below is therefore loaded by <b>your browser,
          straight from youtube-nocookie.com</b>, which is the one request Google will answer:
