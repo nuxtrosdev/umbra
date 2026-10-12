@@ -149,6 +149,13 @@ console.log('');
 if (worked.length) {
   console.log(`${C.b('verdict')}  ${C.g('this address can still extract')} — via ${worked.map((r) => r.p).join(', ')}.`);
   console.log(C.dim('  If the player is still empty, the fault is on our side of the wire, not YouTube\'s.'));
+} else if (vd && vd.kind === 'unavailable') {
+  /* This outranks every "how do we get past YouTube" story below, because
+     there is nothing to get past: it answered, repeatedly, and said the
+     video is gone. Recommending a PO token here sends someone off to set
+     up infrastructure for a video that does not exist. */
+  console.log(`${C.b('verdict')}  ${C.y('the video, not the address')} — ${vd.headline}`);
+  console.log(C.dim('  ' + vd.detail.replace(/\s+/g, ' ')));
 } else if (wall) {
   console.log(`${C.b('verdict')}  ${C.r('bot wall')} — YouTube named this address.`);
   console.log(C.dim('  A proof-of-origin token will not lift this on its own. What helps, in order:'));
@@ -161,7 +168,7 @@ if (worked.length) {
   console.log(C.dim('   npx -y bgutil-ytdlp-pot-provider  (or the docker image), then'));
   console.log(C.dim('   UMBRA_POT_PROVIDER_URL=http://127.0.0.1:4416 npm start'));
 } else {
-  console.log(`${C.b('verdict')}  ${vd && vd.label ? vd.label : 'no backend answered'}`);
+  console.log(`${C.b('verdict')}  ${(vd && vd.headline) || 'no backend answered'}`);
   if (vd && vd.detail) console.log(C.dim('  ' + vd.detail));
   console.log(C.dim('  Nothing here looks like a bot wall, so check egress first: can this machine'));
   console.log(C.dim('  reach the public internet at all?'));
