@@ -1570,6 +1570,17 @@ async function wire() {
       page.status === 200 && /Lend Umbra your browser/.test(page.text) &&
       /\/~umbra\/mint\.js/.test(page.text), 'http ' + page.status);
 
+    ok('the attestation page may reach botguard\u2019s hosts, and only those',
+      /connect-src 'self' https:\/\/jnn-pa\.googleapis\.com/.test(
+        page.headers.get('content-security-policy') || '') &&
+      !/connect-src[^;]*\s\*/.test(page.headers.get('content-security-policy') || ''),
+      (page.headers.get('content-security-policy') || '').split(';').find((x) => /connect-src/.test(x)) || 'none');
+    ok('and it gives botguard something to watch, which the wrapper never did',
+      /id="mint-stage"/.test(page.text) && /userInteractionElement/.test(
+        fs.readFileSync(path.join(HERE, '..', 'public', 'mint.js'), 'utf8')));
+    ok('the minter is waited for rather than read on the next line',
+      /webPoSignalOutput\[0\]/.test(fs.readFileSync(path.join(HERE, '..', 'public', 'mint.js'), 'utf8')));
+
     const who = await call('/~umbra/potid');
     const whoJ = JSON.parse(who.text);
     ok('the page is told which identity to mint for, not left to invent one',

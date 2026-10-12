@@ -81,6 +81,7 @@
       say('fetching the botguard challenge…');
       const challenge = await BG.Challenge.create(bgConfig);
       if (!challenge) throw new Error('no challenge came back');
+      say('challenge ok · program ' + String(challenge.program || '').length + ' chars · vm ' + challenge.globalName);
 
       /* bgutils does not run the interpreter for you: the challenge carries
          its source and the caller is expected to execute it, which is what
@@ -95,13 +96,55 @@
       }
       if (!window[challenge.globalName]) throw new Error('the interpreter defined no vm');
 
-      say('generating the token…');
-      const token = await BG.PoToken.generate({
+      /* The flow is driven by hand rather than through PoToken.generate for
+         two reasons, both learned the hard way from "PMD:Undefined" — which
+         is bgutils' way of saying the VM finished without leaving a minter
+         behind:
+         
+         1. BotGuard wants an element to watch. The convenience wrapper never
+            passes one, and a program that cannot observe interaction has no
+            reason to hand over its signals.
+         2. The signal array is filled by a VM callback, not by the snapshot's
+            return value. Reading it on the very next line is a race the
+            browser loses more often than node does, so wait for it. */
+      const el = document.getElementById('mint-stage');
+      say('taking the botguard snapshot…');
+      const webPoSignalOutput = [];
+      const botguard = await BG.BotGuardClient.create({
         program: challenge.program,
         globalName: challenge.globalName,
-        bgConfig: bgConfig,
+        globalObj: window,
+        userInteractionElement: el,
       });
-      const tok = (token && (token.poToken || token)) || '';
+      const snap = await botguard.snapshot({ webPoSignalOutput });
+      say('snapshot ok · ' + String(snap || '').length + ' chars');
+
+      for (let i = 0; i < 40 && !webPoSignalOutput[0]; i++) {
+        await new Promise(function (r) { setTimeout(r, 50); });
+      }
+      say('signals: ' + webPoSignalOutput.length +
+        (webPoSignalOutput[0] ? ' (minter present)' : ' (no minter yet)'));
+
+      say('exchanging the snapshot for an integrity token…');
+      const itRes = await relayFetch(
+        'https://jnn-pa.googleapis.com/$rpc/google.internal.waa.v1.Waa/GenerateIT', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json+protobuf' },
+          body: JSON.stringify([bgConfig.requestKey, snap]),
+        });
+      const itJson = await itRes.json();
+      if (!itJson || !itJson[0]) {
+        throw new Error('no integrity token came back: ' + JSON.stringify(itJson).slice(0, 120));
+      }
+      say('integrity token ok · ' + String(itJson[0]).length + ' chars');
+
+      const minter = await BG.WebPoMinter.create({
+        integrityToken: itJson[0],
+        estimatedTtlSecs: itJson[1],
+        mintRefreshThreshold: itJson[2],
+        websafeFallbackToken: itJson[3],
+      }, webPoSignalOutput);
+      const tok = await minter.mintAsWebsafeString(who.visitorData);
       if (!tok || String(tok).length < 32) throw new Error('botguard returned nothing usable');
 
       say('minted ' + String(tok).length + ' characters. handing it to umbra…');

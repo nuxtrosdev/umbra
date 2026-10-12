@@ -216,6 +216,21 @@ const CSP_SHELL = [
 /* The 'off' redirect policy promises a tab may leave Umbra entirely. That
    cannot be true and `frame-src 'self'` at the same time, so the promise is
    kept literally for the session that asked for it, and only for that one. */
+/* The attestation page: same-origin for everything that matters, plus the
+   hosts BotGuard itself reaches for. */
+const CSP_MINT = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self' https://jnn-pa.googleapis.com https://www.google.com https://www.youtube.com",
+  "frame-src 'self' blob: https://www.google.com",
+  "worker-src 'self' blob:",
+  "form-action 'none'",
+  "base-uri 'self'",
+].join('; ');
+
 const CSP_SHELL_NATIVE = CSP_SHELL.replace("frame-src 'self' blob:", "frame-src 'self' blob: http: https:");
 const isHtml = (headers) => /text\/html/i.test(String((headers && headers['content-type']) || ''));
 
@@ -534,6 +549,9 @@ are relayed through Umbra because this origin cannot reach them directly. The to
 bound to the visitor identity the server extracts with, so the server can use it as its own. Nothing
 about your session, your cookies or your account is involved or sent.</p>
 <p><button id="mint-go" class="go">mint a token with this browser</button></p>
+<div id="mint-stage" tabindex="0" style="width:100%;height:84px;border:1px dashed rgba(143,214,200,.3);
+border-radius:8px;display:flex;align-items:center;justify-content:center;color:#6f8099;font-size:12px">
+botguard watches this box while it works</div>
 <div id="mint-out" class="out"></div>
 <style>.out{font:12px/1.7 ui-monospace,monospace;color:#9fb0c7;margin-top:12px;max-height:40vh;overflow:auto}
 .out .ok{color:#8fd6c8}.out .bad{color:#e88}
@@ -541,7 +559,17 @@ button.go{font:600 14px/1 ui-sans-serif,system-ui;background:#16323a;color:#eaf7
 border-radius:8px;padding:10px 16px;cursor:pointer}button[disabled]{opacity:.5;cursor:default}</style>
 <script src="/~umbra/a/bg.js"></script><script src="/~umbra/mint.js"></script>`;
     return send(res, 200, {
-      'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'umbra-doc', doc: 'token', tab: ctx.tabId }),
+      'content-type': 'text/html; charset=utf-8',
+      /* BotGuard's program is not only arithmetic: it probes the environment
+         it runs in, and some of that reaches for Google's own origins. On
+         the default document policy those attempts are refused and the VM
+         quietly finishes without leaving a minter behind, which surfaces
+         three steps later as "PMD:Undefined". This one page is allowed to
+         talk to the attestation hosts directly. It is also the one page
+         where that is harmless: it carries no proxied content, holds no
+         cookies, and exists to let your browser prove it is a browser. */
+      'content-security-policy': CSP_MINT,
+      ...metaHeaders({ kind: 'umbra-doc', doc: 'token', tab: ctx.tabId }),
     }, localDoc(ctx, body, 'https://token.umbra/', '<style>' + DOC_CSS + '</style>', 'umbra://token'));
   }
   if (/^https?:\/\/(portal|help|stats|home)\.umbra/i.test(url)) {
