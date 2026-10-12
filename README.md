@@ -11,6 +11,30 @@ npm test             # offline suite, no network required
 
 Node 18+. No dependencies.
 
+## Who pays for the video bytes (`UMBRA_MEDIA_EGRESS`)
+
+By default every byte of every stream is relayed by this origin: the visitor's
+browser talks to Umbra and to nobody else. That is the strongest privacy
+property the proxy has, and it is also the single largest cost of running it —
+at a few hundred concurrent viewers the bandwidth is the service.
+
+| mode | who serves the bytes | costs us | who sees the viewer |
+| --- | --- | --- | --- |
+| `wire` (default) | this origin | all of it | nobody but us |
+| `peer` | a public Piped/Invidious media proxy | nothing | that instance |
+| `direct` | googlevideo | nothing | Google |
+
+`direct` is offered because it is free when it works: a progressive format on a
+`<video>` element needs no CORS at all. It frequently does **not** work, because
+googlevideo signs its urls to the address that extracted them (`ip=` sits inside
+the signed `sparams`), so a url minted by this server can be refused for the
+visitor. The player treats the chosen source as an attempt rather than a
+promise: on a refusal it downgrades to the next one, reloads, and says so in the
+readout. Nothing stalls silently.
+
+Each mode widens `media-src` exactly as far as it must and no further; `wire`
+leaves the policy untouched.
+
 ## Running it in Codespaces
 
 ```

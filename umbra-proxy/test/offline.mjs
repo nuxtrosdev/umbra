@@ -1423,6 +1423,57 @@ async function wire() {
       'http ' + gone.status + ' ' + (/<p class="warn">([^<]*)/.exec(gone.text) || [])[1]);
   }
 
+  /* Who pays for the bytes. The default is this origin, which is the only
+     setting where the visitor talks to nobody else — and the one that bills
+     us for every megabyte. The page must therefore carry the alternatives
+     (an instance proxy, and googlevideo itself) so the player can switch
+     and, when a signed url is refused, fall back without the viewer
+     noticing. */
+  {
+    const w = await call((await mint('umbra://tube/watch?v=' + VID, 'd', tn.tab)).href);
+    const info = JSON.parse((/data-info='([^']+)'/.exec(w.text) || [])[1].replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+    const tracks = [...(info.muxed || []), ...(info.video || []), ...(info.audio || [])];
+    ok('every track carries all three ways to its bytes: ours, an instance, google',
+      tracks.length > 0 && tracks.every((t) => /^\/~umbra\/m\//.test(t.wire || '') &&
+        'peer' in t && 'direct' in t),
+      'tracks=' + tracks.length + ' keys=' + Object.keys(tracks[0] || {}).join(','));
+    ok('and the page is told which of them the operator chose',
+      info.egress === 'wire', String(info.egress));
+    const csp = w.headers.get('content-security-policy') || '';
+    const mediaSrc = csp.split('; ').find((x) => x.startsWith('media-src')) || '';
+    ok('the default policy still forbids the browser from fetching media anywhere else',
+      mediaSrc === "media-src 'self' blob: data:" && !/googlevideo/.test(csp),
+      JSON.stringify(mediaSrc) + ' csp=' + csp.slice(0, 80));
+  }
+
+  /* Changing who serves the bytes is useless unless the policy follows:
+     a browser told "media-src 'self'" simply refuses the instance url and
+     reports nothing an operator can read. */
+  {
+    const IX = await import('../server/media-egress.mjs');
+    ok('each egress mode widens media-src exactly as far as it needs and no further',
+      IX.mediaSrcFor('wire') === "media-src 'self' blob: data:" &&
+      IX.mediaSrcFor('peer') === "media-src 'self' blob: data: https:" &&
+      IX.mediaSrcFor('direct') === "media-src 'self' blob: data: https://*.googlevideo.com" &&
+      IX.mediaSrcFor(IX.modeFrom('nonsense')) === "media-src 'self' blob: data:" &&
+      IX.modeFrom('PEER') === 'peer' && IX.modeFrom(undefined) === 'wire',
+      IX.mediaSrcFor('peer') + ' / ' + IX.mediaSrcFor('direct'));
+  }
+
+  /* The rewrite that makes a peer url: Piped's media proxy takes the same
+     path and query with the googlevideo host moved into `host=`. */
+  {
+    const P = await import('../server/providers/piped.mjs');
+    const peer = P.viaProxy('https://pipedproxy.example',
+      'https://rr2---sn-abc.googlevideo.com/videoplayback?expire=1&itag=18&sig=xyz');
+    ok('a googlevideo url is rewritten onto the instance that can serve it',
+      peer === 'https://pipedproxy.example/videoplayback?expire=1&itag=18&sig=xyz&host=rr2---sn-abc.googlevideo.com',
+      String(peer));
+    ok('and anything that is not a googlevideo url is left alone',
+      P.viaProxy('https://pipedproxy.example', 'https://example.com/a.mp4') === null &&
+      P.viaProxy('', 'https://rr2---sn-abc.googlevideo.com/videoplayback?x=1') === null);
+  }
+
   const tubeBad = await call((await mint('umbra://tube/watch?v=short', 'd', tn.tab)).href);
   ok('tube rejects a malformed video id', tubeBad.status === 400, 'http ' + tubeBad.status);
 

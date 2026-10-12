@@ -156,19 +156,43 @@ export async function trending(region = 'US') {
   return { data: out, instance: { id: `${id}:${instance}`, baseUrl: instance }, tried };
 }
 
+/**
+ * Piped hands out a `proxyUrl`: its own media proxy, which fetches from
+ * googlevideo with the instance's address and serves the bytes with CORS
+ * headers. That is the whole trick behind Piped's bandwidth story — the
+ * visitor's browser pulls from the instance, and the frontend relays
+ * nothing.
+ *
+ * Googlevideo signs its urls to the extracting address (`ip=` sits inside
+ * the signed `sparams`), which is why the raw url cannot simply be handed
+ * to a browser elsewhere: it 403s. The proxy is the fix, not a nicety.
+ */
+export function viaProxy(proxyBase, raw) {
+  if (!proxyBase || !raw) return null;
+  try {
+    const u = new URL(raw);
+    if (!/(^|\.)googlevideo\.com$/i.test(u.hostname)) return null;
+    const base = new URL(String(proxyBase));
+    const out = new URL(u.pathname + u.search, base.origin);
+    out.searchParams.set('host', u.hostname);
+    return out.toString();
+  } catch { return null; }
+}
+
 export async function getStreams(videoId) {
   const { out, instance, tried } = await viaPool(`/streams/${encodeURIComponent(videoId)}`, (j, inst) => {
+    const px = j.proxyUrl || inst;
     const s = T.streamInfo({
       id: videoId,
       title: j.title,
       duration: j.duration,
       live: j.livestream === true,
       videoStreams: (j.videoStreams || []).map((f) => ({
-        url: f.url, itag: f.itag, mimeType: f.mimeType, codec: f.codec, quality: f.quality,
+        url: f.url, peer: viaProxy(px, f.url), itag: f.itag, mimeType: f.mimeType, codec: f.codec, quality: f.quality,
         bitrate: f.bitrate, width: f.width, height: f.height, fps: f.fps, videoOnly: f.videoOnly === true,
       })),
       audioStreams: (j.audioStreams || []).map((f) => ({
-        url: f.url, itag: f.itag, mimeType: f.mimeType, codec: f.codec, quality: f.quality,
+        url: f.url, peer: viaProxy(px, f.url), itag: f.itag, mimeType: f.mimeType, codec: f.codec, quality: f.quality,
         bitrate: f.bitrate, audioOnly: true,
       })),
       subtitles: (j.subtitles || []).map((c) => ({

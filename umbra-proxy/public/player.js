@@ -36,6 +36,40 @@
   }
   function fmt(s) { s = s | 0; var h = (s / 3600) | 0, m = ((s % 3600) / 60) | 0, x = s % 60; return (h ? h + ':' : '') + (m < 10 && h ? '0' : '') + m + ':' + (x < 10 ? '0' : '') + x; }
 
+  /* Where the bytes come from. The server names a preference; this picks
+     the best available url for a track and remembers, per element, what to
+     fall back to when the chosen source refuses — googlevideo signs its
+     urls to the address that extracted them, so a direct hit can 403 even
+     though the url is perfectly valid for this server. Falling back costs
+     one failed request and keeps the video playing. */
+  var egress = d.egress || 'wire';
+  function pick(f) {
+    if (!f) return null;
+    if (egress === 'peer' && f.peer) return { src: f.peer, via: 'peer', next: f.wire };
+    if (egress === 'direct' && f.direct) return { src: f.direct, via: 'direct', next: f.peer || f.wire };
+    return { src: f.wire, via: 'wire', next: null };
+  }
+  function setSrc(elm, f) {
+    var c = pick(f);
+    if (!c) return;
+    elm.__umbraNext = c.next;
+    elm.__umbraVia = c.via;
+    elm.src = c.src;
+  }
+  /* One retry per element, downgrading to the next source. */
+  function onSourceError(elm, label) {
+    var next = elm.__umbraNext;
+    if (!next) return false;
+    elm.__umbraNext = null;
+    readout.textContent = label + ' refused by the ' + elm.__umbraVia +
+      ' source — falling back to this origin and reloading.';
+    elm.__umbraVia = 'wire';
+    elm.src = next;
+    elm.load();
+    var p = elm.play(); if (p && p.catch) p.catch(function () {});
+    return true;
+  }
+
   var video = el('video', { controls: '', playsinline: '', preload: 'metadata', id: 'umbra-video' });
   if (d.thumbWire) video.setAttribute('poster', d.thumbWire);
   var audio = el('audio', { id: 'umbra-audio', preload: 'auto' });
@@ -58,6 +92,7 @@
     }
   }
   function wireEvents() {
+    audio.onerror = function () { onSourceError(audio, 'audio'); };
     video.addEventListener('play', function () { if (state.mode === 'dual') { audio.volume = video.muted ? 0 : 1; audio.play().catch(function(){}); } });
     video.addEventListener('pause', function () { if (state.mode === 'dual') audio.pause(); });
     video.addEventListener('seeked', syncDual);
@@ -67,10 +102,15 @@
       out.push(state.mode + ' · ' + fmt(video.currentTime) + '/' + fmt(video.duration || d.duration) + (video.paused ? ' ⏸' : ' ▶'));
       if (state.mode === 'dual' && vids[state.vi]) out.push('video ' + (vids[state.vi].label || '') + ' ' + (vids[state.vi].codecs || '') + (auds[state.ai] ? ' + audio ' + (auds[state.ai].codecs || '') : ''));
       if (state.mode === 'muxed' && muxed[state.mi]) out.push('muxed itag ' + muxed[state.mi].itag + ' ' + (muxed[state.mi].label || '') + ' · ' + (muxed[state.mi].contentLength ? Math.round(muxed[state.mi].contentLength / 1048576) + ' MB' : ''));
-      out.push('every byte via /~umbra/m · nothing requested from googlevideo.com by you');
+      out.push(video.__umbraVia === 'wire'
+        ? 'every byte via /~umbra/m · nothing requested from googlevideo.com by you'
+        : video.__umbraVia === 'peer'
+          ? 'bytes from a public instance, not this origin · that instance sees your address'
+          : 'bytes straight from googlevideo · google sees your address, this origin relays nothing');
       readout.textContent = out.join('  |  ');
     });
     video.onerror = function () {
+      if (onSourceError(video, 'video')) return;
       readout.textContent = 'this browser cannot decode the chosen track (' + (video.error ? ['ABORTED', 'NETWORK', 'DECODE', 'SRC_NOT_SUPPORTED', 'MEDIA_ERR'][video.error.code - 1] : '?') + ') — switch codec/quality above, or use the proxied embed.';
     };
     /* stall watchdog: error events cover failures, but a throttled or expired
@@ -163,22 +203,22 @@
 
     if (state.mode === 'muxed') {
       var m = muxed[state.mi] || muxed[0];
-      video.src = m.wire;
+      setSrc(video, m);
       video.removeAttribute('muted');
       stage.appendChild(video);
       ctl.appendChild(btn('muxed stream (video+audio)', 'go', function () {}));
-      if (muxed.length > 1) ctl.appendChild(selectOf(muxed.map(function (x) { return (x.label || x.quality) + ' · ' + (x.codecs || '').slice(0, 12) + (x.contentLength ? ' · ' + Math.round(x.contentLength / 1048576) + 'MB' : ''); }), 'quality', function (i) { state.mi = i; video.pause(); video.src = muxed[i].wire; video.load(); }));
+      if (muxed.length > 1) ctl.appendChild(selectOf(muxed.map(function (x) { return (x.label || x.quality) + ' · ' + (x.codecs || '').slice(0, 12) + (x.contentLength ? ' · ' + Math.round(x.contentLength / 1048576) + 'MB' : ''); }), 'quality', function (i) { state.mi = i; video.pause(); setSrc(video, muxed[i]); video.load(); }));
     } else {
       var v = vids[state.vi] || vids[0];
       var a = auds[state.ai] || auds[0];
-      video.src = v.wire;
+      setSrc(video, v);
       video.muted = true;
-      if (a) audio.src = a.wire;
+      if (a) setSrc(audio, a);
       stage.appendChild(video);
       stage.appendChild(audio);
       ctl.appendChild(btn('dual track (video + separate audio)', 'go', function () {}));
-      if (vids.length > 1) ctl.appendChild(selectOf(vids.map(function (x) { return (x.height || '?') + 'p ' + (x.fps || '') + ' · ' + (x.codecs || '').slice(0, 14); }), 'video track', function (i) { state.vi = i; var t = video.paused; video.pause(); video.src = vids[i].wire; video.load(); if (!t) video.play(); }));
-      if (auds.length > 1) ctl.appendChild(selectOf(auds.map(function (x) { return 'audio · ' + (x.codecs || x.label || '') + (x.bitrate ? ' · ' + Math.round(x.bitrate / 1000) + 'kbps' : ''); }), 'audio track', function (i) { state.ai = i; audio.src = auds[i].wire; audio.load(); video.dispatchEvent(new Event('play')); }));
+      if (vids.length > 1) ctl.appendChild(selectOf(vids.map(function (x) { return (x.height || '?') + 'p ' + (x.fps || '') + ' · ' + (x.codecs || '').slice(0, 14); }), 'video track', function (i) { state.vi = i; var t = video.paused; video.pause(); setSrc(video, vids[i]); video.load(); if (!t) video.play(); }));
+      if (auds.length > 1) ctl.appendChild(selectOf(auds.map(function (x) { return 'audio · ' + (x.codecs || x.label || '') + (x.bitrate ? ' · ' + Math.round(x.bitrate / 1000) + 'kbps' : ''); }), 'audio track', function (i) { state.ai = i; setSrc(audio, auds[i]); audio.load(); video.dispatchEvent(new Event('play')); }));
     }
 
     ctl.appendChild(btn(state.mode === 'dual' && muxed.length ? 'switch to muxed' : 'switch to dual track', '', function () {

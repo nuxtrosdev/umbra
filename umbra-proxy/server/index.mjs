@@ -38,6 +38,7 @@ import * as piped from './piped.mjs';
 import * as pipedLocal from './piped-local.mjs';
 import * as ytApi from './api-youtube.mjs';
 import * as pm from './provider-manager.mjs';
+import { modeFrom, mediaSrcFor } from './media-egress.mjs';
 import { verdict as ytVerdict } from './verdict.mjs';
 import * as tubeView from './tube-view.mjs';
 import { TUBE_CSS, ADMIN_CSS, providersDoc, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
@@ -144,12 +145,33 @@ const metaHeaders = (meta) => ({ 'x-umbra-meta': encodeMeta(meta) });
    widens nothing but frame-src, for two hosts. */
 export const DIRECT_EMBED = !/^(0|false|no|off)$/i.test(process.env.UMBRA_DIRECT_EMBED || '');
 const DIRECT_HOSTS = 'https://www.youtube-nocookie.com https://www.youtube.com';
+
+/* ------------------------------------------------------- media egress ---
+ * Who carries the video bytes. Umbra's default is to carry them itself,
+ * which is the only setting where a visitor's browser never speaks to
+ * anyone but this origin — and the only setting that bills this origin for
+ * every megabyte of every stream. At a few hundred concurrent viewers that
+ * is the whole cost of the service.
+ *
+ *   wire    (default) browser → umbra → source. Private, expensive.
+ *   peer    browser → a public Piped/Invidious media proxy. Free to us;
+ *           that instance sees the viewer's address and what they watch.
+ *   direct  browser → googlevideo. Free to us; Google sees the viewer.
+ *           Frequently refused, because googlevideo signs its urls to the
+ *           address that extracted them — the player falls back to the
+ *           wire when that happens, so this is safe to try.
+ *
+ * Whichever is chosen, media-src has to permit it or the browser blocks the
+ * load with no useful error. Nothing else in the policy moves. */
+const MEDIA_EGRESS = modeFrom(process.env.UMBRA_MEDIA_EGRESS);
+export const mediaEgress = () => MEDIA_EGRESS;
+const MEDIA_SRC = mediaSrcFor(MEDIA_EGRESS);
 const CSP_DOC = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
-  "media-src 'self' blob: data:",
+  MEDIA_SRC,
   "font-src 'self' data:",
   "connect-src 'self' ws: wss: blob: data:",
   "worker-src 'self' blob:",
@@ -1442,7 +1464,7 @@ async function route(req, res) {
       /* comments are a nice-to-have: never fail the page over them */
       let cmts = null;
       try { cmts = tubeView.toCommentsView(await pm.getComments(vid), ctx); } catch { /* omit the section */ }
-      payload = { ...payload, ctx: { origin: ctx.origin, tab: ctx.tabId, key: ctx.key } };
+      payload = { ...payload, egress: MEDIA_EGRESS, ctx: { origin: ctx.origin, tab: ctx.tabId, key: ctx.key } };
       const info = ji(payload).replace(/'/g, '&#39;');
       const html = tubeWatch(payload, info, cmts);
       const script = fs.readFileSync(path.join(PUB, 'player.js'), 'utf8');

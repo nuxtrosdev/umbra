@@ -217,6 +217,11 @@ export function streamInfo(s = {}, { provider, instance } = {}) {
     if (!u) return null;
     return {
       url: u,
+      /* The same bytes, offered by a third party that already has a working
+         relationship with Google. Kept beside the raw url rather than
+         replacing it, because which one to use is the caller's decision and
+         depends on who is paying for the bandwidth. */
+      peer: url(f.peer) || null,
       itag: num(f.itag),
       mimeType: str(f.mimeType, 128) || null,
       codec: str(f.codec, 64) || null,

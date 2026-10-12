@@ -286,6 +286,16 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
     height: num(st.height),
     audioOnly: kind === 'audio',
     format: st.format || '',
+    /* Three ways to the same bytes, and the page picks per the operator's
+       setting:
+         wire   this origin relays them       — costs us every byte
+         peer   a public instance relays them — costs us nothing
+         direct googlevideo straight to them  — costs us nothing, usually 403s
+       `direct` is offered because it is free when it works (progressive
+       formats on a <video> element need no CORS at all) and because the
+       player can fall back the moment it does not. */
+    peer: st.peer || null,
+    direct: /(^|\.)googlevideo\.com/i.test(String(st.url || '')) ? st.url : null,
   });
 
   const vs = Array.isArray(s.videoStreams) ? s.videoStreams : [];

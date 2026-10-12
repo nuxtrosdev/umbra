@@ -245,17 +245,17 @@ export async function getStreams(videoId) {
       live: j.liveNow === true,
       videoStreams: [
         ...(j.formatStreams || []).map((f) => ({
-          url: via(f), directUrl: f.url, itag: f.itag, mimeType: f.type, quality: f.qualityLabel || f.quality,
+          url: via(f), peer: via(f), directUrl: f.url, itag: f.itag, mimeType: f.type, quality: f.qualityLabel || f.quality,
           bitrate: f.bitrate, fps: f.fps, videoOnly: false,
         })),
         ...adaptive.filter((f) => /^video\//.test(String(f.type || ''))).map((f) => ({
-          url: via(f), directUrl: f.url, itag: f.itag, mimeType: f.type, quality: f.qualityLabel,
+          url: via(f), peer: via(f), directUrl: f.url, itag: f.itag, mimeType: f.type, quality: f.qualityLabel,
           bitrate: f.bitrate, fps: f.fps, width: f.width, height: f.height,
           contentLength: f.clen, videoOnly: true,
         })),
       ],
       audioStreams: adaptive.filter((f) => /^audio\//.test(String(f.type || ''))).map((f) => ({
-        url: via(f), directUrl: f.url, itag: f.itag, mimeType: f.type, quality: f.audioQuality,
+        url: via(f), peer: via(f), directUrl: f.url, itag: f.itag, mimeType: f.type, quality: f.audioQuality,
         bitrate: f.bitrate, contentLength: f.clen, audioOnly: true,
       })),
       subtitles: (j.captions || []).map((c) => ({
