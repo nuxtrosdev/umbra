@@ -1531,6 +1531,21 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* A button that cannot do what it says. With no extracted formats,
+     "try native stream" fell back to the proxied embed and showed the
+     embed's readout — so the reader concluded the native path had been
+     tried and had failed, when it was never attempted. */
+  {
+    const js = await call('/~umbra/player.js');
+    const body = js.text;
+    const embedBlock = body.slice(body.indexOf("state.mode === 'embed'"));
+    ok('the native-stream button is only offered when there is a native stream',
+      /if \(muxed\.length \|\| vids\.length\) \{\s*\n\s*ctl\.appendChild\(btn\('try native stream'/.test(embedBlock),
+      'offered unconditionally');
+    ok('and a page with nothing extracted points at the frame that usually plays',
+      /the frame that usually plays/.test(embedBlock));
+  }
+
   /* A black embed with no explanation is the single most common thing a
      viewer sees, and the frame cannot speak across the document boundary
      on its own. YouTube's IFrame API is a postMessage protocol with a JS

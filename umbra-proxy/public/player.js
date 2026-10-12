@@ -291,9 +291,25 @@
       });
       stage.appendChild(f);
       ctl.appendChild(btn('proxied embed document', 'go', function () {}));
-      ctl.appendChild(btn('try native stream', '', function () { state.mode = muxed.length ? 'muxed' : (vids.length ? 'dual' : 'embed'); mount(); }));
+      /* Offering "try native stream" when extraction produced nothing was a
+         lie that cost the reader a click and told them nothing: it fell
+         straight back to this same embed, so the embed's own readout looked
+         like the native path's verdict. Only offer it when it exists. */
+      if (muxed.length || vids.length) {
+        ctl.appendChild(btn('try native stream', '', function () { state.mode = muxed.length ? 'muxed' : 'dual'; mount(); }));
+      }
+      if (d.directEmbed && !d.ok) {
+        ctl.appendChild(btn('\u2190 the frame that usually plays', 'go', function () { state.mode = 'direct'; mount(); }));
+      }
       if (d.directEmbed) ctl.appendChild(btn('load direct from youtube (leaves umbra)', 'warn', function () { state.mode = 'direct'; mount(); }));
-      readout.textContent = d.ok ? 'native available' : 'stream URLs withheld upstream: ' + (d.reason || 'blocked') + ' — the embed document is served through Umbra with X-Frame-Options and CSP removed';
+      readout.textContent = d.ok
+        ? 'native available'
+        : (d.verdict && d.verdict.headline
+          /* "every provider failed" describes our side of the call. When
+             YouTube gave an actual reason, that is the thing worth saying. */
+          ? d.verdict.headline + ' No extraction can fix that; this frame is the only path left.'
+          : 'no backend could extract this video (' + (d.reason || 'blocked') + ') — '
+            + 'this is the proxied embed, served through Umbra with X-Frame-Options and CSP removed');
       /* The frame cannot report its own failure across the document
          boundary, but YouTube's answer to it came through this origin. Ask,
          once the player has had time to ask first. A black rectangle becomes
