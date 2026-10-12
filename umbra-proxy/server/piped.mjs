@@ -365,6 +365,11 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
        override for the same reason every other YouTube call does — a test
        that cannot reach the surface cannot prove it works. */
     embedDoc: href(ctx, NOCOOKIE_BASE() + '/embed/' + videoId, 'd'),
+    /* The address behind that token. A wire token is signed by the running
+       server and bound to the live session, so it dies when the server
+       restarts — the page in the browser does not. Keeping the logical url
+       lets the player mint a fresh token instead of showing a dead one. */
+    embedUrl: NOCOOKIE_BASE() + '/embed/' + videoId,
     /* Read at call time, not at import time, so the suite can toggle it per
        request. Present unless the operator switched it off. */
     directEmbed: !/^(0|false|no|off)$/i.test(process.env.UMBRA_DIRECT_EMBED || '')

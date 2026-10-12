@@ -279,6 +279,29 @@ ${kind === 'redirect' ? '/* a held hop waits for the reader: follow/open/keep ab
 })();</script></body></html>`;
 }
 
+/**
+ * A wire token that no longer verifies.
+ *
+ * Almost always this is time, not tampering: the server restarted, or the
+ * session was burned, and a page still open in the browser is holding
+ * tokens signed by a process that no longer exists. The old capsule said
+ * "token failed signature or session check", which reads like an
+ * accusation and gives the reader nothing to do. Say what happened, and
+ * tell the document that framed us so it can mint a working one.
+ */
+function stalePage(ctx, url) {
+  const body = `<div class="kicker">umbra · wire</div>
+<h1>This link was signed by an earlier session</h1>
+<u>${esc(String(url).slice(0, 300))}</u>
+<p class="warn">The server restarted or the session was burned, so the token in
+this page is no longer valid. Nothing is broken and nothing was refused by the
+site \u2014 reload the tab and it will be re-signed.</p>
+<p class="muted">If this document is inside a player, it is asking the page to
+re-mint it right now; you should not have to do anything.</p>
+<script>try { parent.postMessage({ umbra: 1, type: 'stale-token' }, '*'); } catch (e) {}<\/script>`;
+  return capsule({ kind: 'noop', tab: ctx.tabId, title: 'Umbra \u00b7 expired link', body });
+}
+
 function errPage(ctx, url, msg, chain) {
   const body = `<div class="kicker">umbra · wire</div>
 <h1>Nothing could be delivered for <span class="muted">${esc(displayHost(url))}</span></h1>
@@ -1561,7 +1584,7 @@ async function route(req, res) {
     if (!t || t.s !== s.id || t.g !== s.gen) {
       const ctx = mkCtx('umbra://invalid', 'd', null);
       return send(res, 403, { 'content-type': 'text/html; charset=utf-8' },
-        errPage(ctx, t ? t.u : 'unsigned', 'token failed signature or session check', []));
+        stalePage(ctx, t ? t.u : 'a link from a previous run of this server'));
     }
     const ctx = mkCtx(t.u, head, t.t);
     const opts = { mode: head };

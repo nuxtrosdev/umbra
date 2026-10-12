@@ -1474,6 +1474,28 @@ async function wire() {
       P.viaProxy('', 'https://rr2---sn-abc.googlevideo.com/videoplayback?x=1') === null);
   }
 
+  /* A token from a dead session. The user meets this by leaving a tab open
+     across a restart, and the old capsule accused them of a signature
+     failure. It must explain itself and ask the framer to re-mint. */
+  {
+    const stale = await call('/~umbra/d/' + Buffer.from('not-a-real-token').toString('base64url') + '/');
+    ok('a link signed by an earlier session explains itself instead of accusing anyone',
+      stale.status === 403 && /signed by an earlier session/i.test(stale.text) &&
+      /reload the tab/i.test(stale.text) && !/failed signature/i.test(stale.text),
+      'http ' + stale.status + ' ' + (/<h1>([^<]*)/.exec(stale.text) || [])[1]);
+    ok('and it tells the page that framed it, so a player can re-mint without the user',
+      /postMessage\(\{ umbra: 1, type: 'stale-token' \}/.test(stale.text));
+  }
+
+  /* the logical address behind the embed token, which is what makes
+     re-minting possible at all */
+  {
+    const w2 = await call((await mint('umbra://tube/watch?v=' + VID, 'd', tn.tab)).href);
+    const i2 = JSON.parse((/data-info='([^']+)'/.exec(w2.text) || [])[1].replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+    ok('the player keeps the address behind the embed token, not just the token',
+      /\/embed\/[\w-]{11}$/.test(i2.embedUrl || ''), String(i2.embedUrl));
+  }
+
   const tubeBad = await call((await mint('umbra://tube/watch?v=short', 'd', tn.tab)).href);
   ok('tube rejects a malformed video id', tubeBad.status === 400, 'http ' + tubeBad.status);
 

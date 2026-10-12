@@ -179,6 +179,26 @@
     }
 
     if (state.mode === 'embed') {
+      /* A token signed by a previous run of the server is dead on arrival,
+         and the frame can only show a capsule saying so. It tells us; we
+         mint a fresh one and swap it in. Failing that, fall through to the
+         frame the browser loads itself, which needs no token at all. */
+      if (!window.__umbraStaleHook) {
+        window.__umbraStaleHook = true;
+        window.addEventListener('message', function (ev) {
+          var m = ev && ev.data;
+          if (!m || m.umbra !== 1 || m.type !== 'stale-token') return;
+          if (!d.embedUrl) { if (d.directEmbed) { state.mode = 'direct'; mount(); } return; }
+          readout.textContent = 'that link was signed before the server restarted — re-minting it…';
+          fetch('/~umbra/mint', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ url: d.embedUrl, tab: (d.ctx && d.ctx.tab) || '', mode: 'd' }),
+          }).then(function (r) { return r.json(); }).then(function (j) {
+            if (j && j.href) { d.embedDoc = j.href; mount(); }
+            else if (d.directEmbed) { state.mode = 'direct'; mount(); }
+          }).catch(function () { if (d.directEmbed) { state.mode = 'direct'; mount(); } });
+        });
+      }
       var f = el('iframe', {
         src: d.embedDoc || 'about:blank', allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen',
         /* YouTube's embedded player refuses with error 153 when it cannot see
