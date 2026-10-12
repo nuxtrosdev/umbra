@@ -223,6 +223,29 @@ async function fromBgUtils(visitorData) {
     };
     const challenge = await bg.Challenge.create(base);
     if (!challenge) throw new Error('bgutils returned no challenge');
+
+    /* The step that was missing, and the entire reason this said
+       "VM not found".
+       
+       bgutils does not run BotGuard's interpreter for you: the challenge
+       arrives *with* the interpreter's source, and the caller is expected
+       to execute it, which is what defines the VM at
+       `globalThis[challenge.globalName]`. We went straight to generate(),
+       so the lookup found nothing — not a failure to pass BotGuard, a
+       failure to start it. The wrapper name is Google's own, verbose and
+       deliberately unappealing; it is still just a string of JavaScript. */
+    const src = challenge.interpreterJavascript &&
+      (challenge.interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue ||
+       challenge.interpreterJavascript.private_do_not_access_or_else_safe_script_wrapped_value);
+    if (!globalThis[challenge.globalName]) {
+      if (!src) throw new Error('challenge carried no interpreter to run');
+      /* eslint-disable-next-line no-new-func */
+      new Function(String(src))();
+    }
+    if (!globalThis[challenge.globalName]) {
+      throw new Error('interpreter ran but defined no vm (' + challenge.globalName + ')');
+    }
+
     const token = await bg.PoToken.generate(
       { program: challenge.program, globalName: challenge.globalName, bgConfig: base });
     return token && String(token.poToken || token);

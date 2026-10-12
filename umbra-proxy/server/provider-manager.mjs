@@ -130,6 +130,15 @@ const GRADE = {
   streams: (d) => {
     const n = [...((d && d.videoStreams) || []), ...((d && d.audioStreams) || [])]
       .filter((f) => f && f.url).length;
+    const v = ((d && d.videoStreams) || []).filter((f) => f && f.url);
+    const a = ((d && d.audioStreams) || []).filter((f) => f && f.url);
+    const muxed = v.filter((f) => f.videoOnly !== true);
+    /* A single video-only rendition is what a gated address gets when
+       YouTube relents slightly: technically formats, actually a silent
+       film. Hold it and keep asking — somebody may have the audio. */
+    if (!muxed.length && !a.length && v.length) {
+      return { grade: 'degraded', why: `only ${v.length} video-only format(s), no audio` };
+    }
     if (n) return null;
     if (d && d.hls) return { grade: 'degraded', why: 'hls manifest only, no individual formats' };
     return { grade: 'bad', why: 'answered with no playable formats' };

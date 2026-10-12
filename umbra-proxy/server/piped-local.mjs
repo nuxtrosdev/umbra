@@ -535,9 +535,18 @@ export async function diagnose(videoId) {
         /* YouTube gave a reason, the same one, to every client. Quote it
            rather than theorising about egress: "this live stream recording
            is not available" is an answer, not a symptom. */
-        ? 'youtube refuses this video to every client: ' +
-          JSON.stringify((clients.find((c) => c.reason) || {}).reason) +
-          ' — that is about the video, not this address'
+        ? (/sign ?in to confirm|not a bot|LOGIN_REQUIRED/i.test(
+            String((clients.find((c) => c.reason) || {}).reason))
+          /* The same empty answer, two opposite causes. "Sign in to confirm
+             you're not a bot" is a judgement about who is asking; "this
+             video is unavailable" is a fact about the video. Saying the
+             wrong one sends the reader to fix the wrong thing. */
+          ? 'youtube is refusing this address, not this video: ' +
+            JSON.stringify((clients.find((c) => c.reason) || {}).reason) +
+            ' — a proof-of-origin token or different egress is what helps'
+          : 'youtube refuses this video to every client: ' +
+            JSON.stringify((clients.find((c) => c.reason) || {}).reason) +
+            ' — that is about the video, not this address')
         : clients.every((c) => c.formats === 0)
         ? 'every client returned zero formats — this is an egress-level block or an unavailable video'
         : clients.some((c) => c.ciphered > 0)

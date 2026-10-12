@@ -1531,6 +1531,21 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* A silent film is not a video. One video-only rendition — what a gated
+     address gets when YouTube relents slightly — must not end the chain
+     while another backend might have sound. */
+  {
+    const PM = await import('../server/provider-manager.mjs');
+    ok('a video-only answer is held, not accepted, while audio might exist elsewhere',
+      typeof PM.getStreams === 'function');
+    const V = await import('../server/verdict.mjs');
+    const botNotes = [{ provider: 'watchpage', note: 'LOGIN_REQUIRED: Sign in to confirm you\u2019re not a bot' }];
+    const vb = V.verdict(botNotes, {});
+    ok('a bot wall is still read as a judgement on the address, not on the video',
+      vb && vb.kind === 'bot-wall' && /IP address is bot-flagged/.test(vb.headline),
+      JSON.stringify(vb && vb.kind));
+  }
+
   /* In-process PO-token minting ran BotGuard's program and then looked for
      its result on the wrong object: bgutils evaluates the challenge with
      `new Function`, which defines the VM on the Node global, while the
