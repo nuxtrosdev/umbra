@@ -53,6 +53,30 @@ A request that already carries a BotGuard proof-of-origin token is **never**
 touched under either setting, and the token is harvested for the server-side
 ladder.
 
+## Lending Umbra a browser (`umbra://token`)
+
+Every server-side attempt to mint a proof-of-origin token fails for one
+reason: BotGuard does not check who you claim to be, it checks the runtime it
+is running in. A headless DOM is not a browser and does not pass, which is why
+`bgutils-js` under jsdom reports `VM not found`, and why installing yt-dlp
+changed nothing.
+
+A real browser is already present, and Google already trusts it - that is why
+the direct embed plays while extraction is refused. `umbra://token` borrows it
+for a few seconds:
+
+* BotGuard's interpreter runs **in your tab**, with a genuine JS engine, DOM
+  and timing;
+* the two calls it needs are relayed through `/~umbra/bgrelay`, which accepts
+  BotGuard's hosts and nothing else - it is not an open proxy;
+* the token is minted against the **server's** visitor identity (served by
+  `/~umbra/potid`), so the extraction ladder can use it as its own;
+* the result is deposited at `/~umbra/pot` and supersedes anything cached.
+
+Requires `npm i bgutils-js`. No cookies, account or session data are involved.
+It can still fail honestly: Google may refuse the challenge to this address
+even though your browser ran it.
+
 ## HLS: the answer a gated address often gets
 
 YouTube increasingly hands out an HLS manifest instead of individual formats

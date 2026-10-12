@@ -487,9 +487,9 @@ async function serve(ctx, req, res, opts = {}) {
      locally and never reaches a resolver. */
   {
     const hm = /^(https?:\/\/)([^/:]+)(:\d+)?(\/.*|)$/i.exec(url);
-    if (hm && /^(lab|portal|help|stats|home|tube)$/i.test(hm[2])) url = hm[1] + hm[2] + '.umbra' + (hm[3] || '') + hm[4];
+    if (hm && /^(lab|portal|help|stats|home|tube|token)$/i.test(hm[2])) url = hm[1] + hm[2] + '.umbra' + (hm[3] || '') + hm[4];
   }
-  if (/^https?:\/\/([a-z0-9-]+\.)?umbra\b/i.test(url) && !/^https?:\/\/(lab|portal|help|stats|tube)\.umbra/i.test(url)) {
+  if (/^https?:\/\/([a-z0-9-]+\.)?umbra\b/i.test(url) && !/^https?:\/\/(lab|portal|help|stats|tube|token)\.umbra/i.test(url)) {
     return send(res, 404, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'umbra-404', url }) },
       errPage(ctx, url, 'no umbra resource at that logical address', []));
   }
@@ -521,6 +521,28 @@ async function serve(ctx, req, res, opts = {}) {
       }, localDoc(ctx, html, 'https://lab.umbra/' + key, '<style>' + capsuleCss + '</style>', 'umbra://lab/' + key));
     }
     return send(res, 200, { 'content-type': 'text/css; charset=utf-8' }, 'body{background:#0c1016}');
+  }
+  if (/^https?:\/\/token\.umbra/i.test(url)) {
+    const body = `<div class="kicker">proof of origin</div>
+<h1>Lend Umbra your browser for a moment</h1>
+<p class="muted">Every server-side attempt to mint a proof-of-origin token fails for the same reason:
+BotGuard does not check who you claim to be, it checks the runtime it is running in. A headless DOM is
+not a browser and never passes. Yours is, and Google already trusts it \u2014 that is why the direct
+embed plays while extraction is refused.</p>
+<p class="muted">Press the button and BotGuard runs <em>here</em>, in this tab. The two calls it makes
+are relayed through Umbra because this origin cannot reach them directly. The token that comes out is
+bound to the visitor identity the server extracts with, so the server can use it as its own. Nothing
+about your session, your cookies or your account is involved or sent.</p>
+<p><button id="mint-go" class="go">mint a token with this browser</button></p>
+<div id="mint-out" class="out"></div>
+<style>.out{font:12px/1.7 ui-monospace,monospace;color:#9fb0c7;margin-top:12px;max-height:40vh;overflow:auto}
+.out .ok{color:#8fd6c8}.out .bad{color:#e88}
+button.go{font:600 14px/1 ui-sans-serif,system-ui;background:#16323a;color:#eaf7f2;border:1px solid rgba(143,214,200,.4);
+border-radius:8px;padding:10px 16px;cursor:pointer}button[disabled]{opacity:.5;cursor:default}</style>
+<script src="/~umbra/a/bg.js"></script><script src="/~umbra/mint.js"></script>`;
+    return send(res, 200, {
+      'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'umbra-doc', doc: 'token', tab: ctx.tabId }),
+    }, localDoc(ctx, body, 'https://token.umbra/', '<style>' + DOC_CSS + '</style>', 'umbra://token'));
   }
   if (/^https?:\/\/(portal|help|stats|home)\.umbra/i.test(url)) {
     const which = /stats/i.test(url) ? 'stats' : /help|protocol/i.test(url) ? 'help' : 'home';
@@ -849,6 +871,7 @@ function localAddressToUrl(raw) {
   if (/^umbra:\/\/(portal|home)\//.test(s)) return 'https://portal.umbra/home';
   if (/^umbra:\/\/help(\/|\?|$)/i.test(s)) return 'https://portal.umbra/help';
   if (/^umbra:\/\/stats(\/|\?|$)/i.test(s)) return 'https://portal.umbra/stats';
+  if (/^umbra:\/\/token(\/|\?|$)/i.test(s)) return 'https://token.umbra/';
   if (/^umbra:\/\/protocol(\/|\?|$)/i.test(s)) return 'https://portal.umbra/help';
   if (/^umbra:\/\/(portal|home)(\/|\?|$)/i.test(s)) return 'https://portal.umbra/home';
   if (/^umbra:\/\/lab/.test(s)) return 'https://lab.umbra/' + s.slice('umbra://lab'.length).replace(/^\//, '');
@@ -1185,6 +1208,8 @@ const STATIC = {
   '/~umbra/a/worker-shim.js': ['worker-shim.js', 'application/javascript; charset=utf-8'],
   '/~umbra/player.js': ['player.js', 'application/javascript; charset=utf-8'],
   '/~umbra/a/hls.js': ['hls.js', 'application/javascript; charset=utf-8'],
+  '/~umbra/a/bg.js': ['bg.js', 'application/javascript; charset=utf-8'],
+  '/~umbra/mint.js': ['mint.js', 'application/javascript; charset=utf-8'],
 };
 /* hls.js, if the operator installed it.
    
@@ -1192,6 +1217,16 @@ const STATIC = {
    bundle in the tree would have to be audited and updated by hand, and the
    player degrades honestly without it (Safari plays HLS natively; every
    other browser is told why it cannot). */
+/* bgutils-js is published as CJS. Wrap rather than vendor: the shim is three
+   lines and the package stays updatable by npm. */
+function bgBundle() {
+  try {
+    const b = fs.readFileSync(path.join(HERE, '..', '..', 'node_modules', 'bgutils-js', 'bundle', 'index.cjs'));
+    return 'var module={exports:{}},exports=module.exports;\n' + b.toString('utf8')
+      + '\n;window.BGUtils=module.exports;';
+  } catch { return null; }
+}
+
 function hlsBundle() {
   for (const rel of ['hls.js/dist/hls.min.js', 'hls.js/dist/hls.js']) {
     try { return fs.readFileSync(path.join(HERE, '..', '..', 'node_modules', rel)); } catch { /* next */ }
@@ -1200,6 +1235,14 @@ function hlsBundle() {
 }
 
 function serveStatic(res, key, sess = null) {
+  if (key === '/~umbra/a/bg.js') {
+    const b = bgBundle();
+    if (!b) {
+      return send(res, 404, { 'content-type': 'application/javascript; charset=utf-8' },
+        '/* bgutils-js is not installed: npm i bgutils-js */');
+    }
+    return send(res, 200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'max-age=3600' }, b);
+  }
   if (key === '/~umbra/a/hls.js') {
     const b = hlsBundle();
     if (!b) {
@@ -1725,6 +1768,58 @@ async function route(req, res) {
       mopts.ct = req.headers['content-type'] || null;
     }
     return serve(ctx, req, res, mopts);
+  }
+
+  /* ---- borrowing the visitor's browser to mint a proof-of-origin ----
+     Three small endpoints, because the work is split: the page needs to
+     know which identity to mint for, needs a relay for two Google calls it
+     cannot make cross-origin, and needs somewhere to put the result. */
+  if (head === 'potid') {
+    const v = await getVisitorData({});
+    return json(res, { visitorData: v.value || '', source: v.source || '', synthetic: !!v.synthetic });
+  }
+
+  if (head === 'bgrelay' && req.method === 'POST') {
+    /* A relay, not an open proxy: only BotGuard's two hosts, only from a
+       session that already exists, and the response is handed back as data
+       rather than as a navigable document. */
+    let body = null;
+    try { body = JSON.parse((await readReq(req, 2 * 1024 * 1024)).toString('utf8')); }
+    catch { return json(res, { error: 'unreadable request' }, 400); }
+    const target = String((body && body.url) || '');
+    if (!/^https:\/\/(jnn-pa\.googleapis\.com|www\.youtube\.com)\//.test(target)) {
+      return json(res, { error: 'that host is not part of the attestation flow' }, 403);
+    }
+    try {
+      const hdrs = { 'content-type': 'application/json+protobuf', 'user-agent': UA,
+        'x-goog-api-key': 'AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw', origin: 'https://www.youtube.com' };
+      for (const [k, v] of Object.entries((body && body.headers) || {})) {
+        if (/^(content-type|x-goog-api-key)$/i.test(k)) hdrs[k.toLowerCase()] = String(v);
+      }
+      const up = await upstream(target, {
+        method: String((body && body.method) || 'GET').toUpperCase(),
+        headers: hdrs,
+        body: body && body.body ? Buffer.from(String(body.body)) : null,
+      });
+      const text = (await readBody(up.res, { limit: 4 * 1024 * 1024 })).toString('utf8');
+      return json(res, { status: up.status, body: text });
+    } catch (e) {
+      return json(res, { error: String((e && e.message) || e).slice(0, 160) }, 502);
+    }
+  }
+
+  if (head === 'pot' && req.method === 'POST') {
+    let body = null;
+    try { body = JSON.parse((await readReq(req, 64 * 1024)).toString('utf8')); }
+    catch { return json(res, { ok: false, error: 'unreadable request' }, 400); }
+    const rec = pot.observe({
+      poToken: String((body && body.poToken) || ''),
+      visitorData: String((body && body.visitorData) || ''),
+    });
+    if (!rec) return json(res, { ok: false, error: 'that did not look like a token' }, 400);
+    console.log('umbra: a browser minted a proof-of-origin token for '
+      + String(rec.visitorData || '(none)').slice(0, 12) + '…');
+    return json(res, { ok: true, length: rec.token.length });
   }
 
   /* ---- hls manifests: rewritten so segments stay on the wire ---- */

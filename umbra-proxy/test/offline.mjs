@@ -1563,6 +1563,49 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* Minting a proof-of-origin in the one browser Google already trusts. */
+  {
+    const page = await call((await mint('umbra://token', 'd', tn.tab)).href);
+    ok('the token page is an ordinary umbra address, served same-origin',
+      page.status === 200 && /Lend Umbra your browser/.test(page.text) &&
+      /\/~umbra\/mint\.js/.test(page.text), 'http ' + page.status);
+
+    const who = await call('/~umbra/potid');
+    const whoJ = JSON.parse(who.text);
+    ok('the page is told which identity to mint for, not left to invent one',
+      who.status === 200 && typeof whoJ.visitorData === 'string' && whoJ.visitorData.length > 10,
+      (whoJ.visitorData || '').slice(0, 12));
+
+    /* the relay is not an open proxy */
+    const bad = await call('/~umbra/bgrelay', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/', method: 'GET' }),
+    });
+    ok('the attestation relay refuses every host but botguard\u2019s',
+      bad.status === 403 && /not part of the attestation flow/.test(bad.text), 'http ' + bad.status);
+
+    /* a token deposited by a browser is adopted for that identity */
+    const TOK = 'Mv' + 'q'.repeat(80);
+    const dep = await call('/~umbra/pot', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ visitorData: whoJ.visitorData, poToken: TOK }),
+    });
+    ok('a token minted in the browser is accepted and kept',
+      dep.status === 200 && JSON.parse(dep.text).ok === true, dep.text.slice(0, 60));
+
+    const ytj = JSON.parse((await call('/~umbra/ytj?v=' + VID + '&t=' + tn.tab)).text);
+    ok('and the server-side ladder then presents it as its own',
+      /harvest|attached/.test(JSON.stringify(ytj.poToken || '')),
+      JSON.stringify(ytj.poToken || '').slice(0, 60));
+
+    const junk = await call('/~umbra/pot', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ visitorData: whoJ.visitorData, poToken: 'nope' }),
+    });
+    ok('and something that is not a token is refused rather than cached',
+      junk.status === 400, 'http ' + junk.status);
+  }
+
   /* Which side failed: theirs or ours. */
   {
     const V = await import('../server/verdict.mjs');
