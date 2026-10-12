@@ -1531,6 +1531,24 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* A black embed with no explanation is the single most common thing a
+     viewer sees, and the frame cannot speak across the document boundary
+     on its own. YouTube's IFrame API is a postMessage protocol with a JS
+     wrapper; speaking the protocol directly gets the error codes without
+     letting Google script into this document. */
+  {
+    const js = await call('/~umbra/player.js');
+    const src = js.text;
+    ok('the page asks the direct frame what it is doing, in youtube\u2019s own protocol',
+      /event: 'listening'/.test(src) && /enablejsapi=1/.test(src) &&
+      /ev\.origin !== origin/.test(src),
+      'http ' + js.status);
+    ok('and it explains error 101/150 as the uploader\u2019s choice, not a proxy failure',
+      /101:/.test(src) && /150:/.test(src) && /outside YouTube/.test(src));
+    ok('without loading any google script into the umbra document',
+      !/youtube\.com\/iframe_api/.test(src) && !/script-src[^;]*youtube/.test(src));
+  }
+
   /* The failure the provider work exists for: the local engine is bot-gated
      AND every Piped instance is refusing at once. Before this, Tube died here
      because it only ever spoke to Piped. */

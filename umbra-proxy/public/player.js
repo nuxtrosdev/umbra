@@ -151,6 +151,74 @@
     }, delay || 3000);
   }
 
+  /* ------------------------------------------------------------------
+     What the direct frame is actually doing.
+
+     A YouTube embed that refuses is a black rectangle and nothing else:
+     no error event crosses the document boundary, so every cause looks
+     the same from this page. The IFrame Player API is YouTube's own answer
+     to that — it speaks postMessage with the frame and reports readiness,
+     state and error codes. Codes 101 and 150 are the one every proxy hits
+     and nobody can fix: the uploader switched embedding off, so the video
+     plays on youtube.com and nowhere else, forever.
+     ------------------------------------------------------------------ */
+  var YT_ERR = {
+    2: 'YouTube rejected the video id as malformed.',
+    5: 'the HTML5 player failed on this video in this browser.',
+    100: 'the video does not exist, or was removed or made private.',
+    101: 'the uploader does not allow this video to be played outside YouTube.',
+    150: 'the uploader does not allow this video to be played outside YouTube.',
+  };
+  /* YouTube's IFrame API is a JS wrapper around a postMessage protocol, and
+     the wrapper is the only part that has to come from Google. Loading it
+     would mean allowing Google script into this document — a real widening
+     of the boundary for a diagnostic. The protocol itself costs nothing:
+     say "listening" to the frame, and it reports readiness, state changes
+     and error codes back. Same answers, no third-party code, no CSP
+     change. */
+  function watchDirect(frame) {
+    var origin = 'https://www.youtube-nocookie.com';
+    var spoke = false;
+    function tell() {
+      try {
+        frame.contentWindow.postMessage(JSON.stringify({
+          event: 'listening', id: 'umbra', channel: 'widget',
+        }), origin);
+      } catch (e) {}
+    }
+    if (!window.__umbraDirectHook) {
+      window.__umbraDirectHook = true;
+      window.addEventListener('message', function (ev) {
+        if (!ev || ev.origin !== origin) return;
+        var m = ev.data;
+        if (typeof m === 'string') { try { m = JSON.parse(m); } catch (e) { return; } }
+        if (!m || !m.event) return;
+        spoke = true;
+        if (m.event === 'onReady' || m.event === 'initialDelivery') {
+          readout.textContent = 'direct embed ready — YouTube accepted this player. Press play. '
+            + 'The bytes come from Google to you; Umbra relays nothing here.';
+        } else if (m.event === 'onError') {
+          var code = Number(m.info);
+          readout.textContent = 'YouTube refused this embed (error ' + code + '): '
+            + (YT_ERR[code] || 'no reason given')
+            + ((code === 101 || code === 150)
+              ? ' No server-side change can lift that. The native stream is unaffected — '
+                + 'it does not go through the embed.'
+              : '');
+        } else if (m.event === 'infoDelivery' && m.info && m.info.playerState === 1) {
+          readout.textContent = 'playing — direct from YouTube to your browser.';
+        }
+      });
+    }
+    frame.addEventListener('load', function () { tell(); setTimeout(tell, 600); });
+    setTimeout(function () {
+      if (!spoke) {
+        readout.textContent = 'direct embed mounted, but the player has not said anything back yet. '
+          + 'If it stays black, the uploader may have disabled embedding — try "watch on youtube".';
+      }
+    }, 6000);
+  }
+
   function mount() {
     stage.innerHTML = '';
     ctl.innerHTML = '';
@@ -161,6 +229,7 @@
     if (state.mode === 'direct' && d.directEmbed) {
       var df = document.createElement('iframe');
       df.setAttribute('data-umbra-direct', '1');
+      df.id = 'umbra-direct-frame';
       /* The page carries <meta name="referrer" content="no-referrer">, and a
          YouTube embed with no Referer at all is refused with error 153 — a
          black rectangle. Send the origin, and only the origin. */
@@ -168,12 +237,25 @@
       df.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
       df.setAttribute('allowfullscreen', '');
       df.setAttribute('style', 'width:100%;aspect-ratio:16/9;border:0;display:block;background:#000');
-      df.setAttribute('src', d.directEmbed);
+      /* enablejsapi turns the frame from a black box into something that
+         answers questions. Without it a refused embed and a working one
+         look identical from out here. */
+      df.setAttribute('src', d.directEmbed +
+        (d.directEmbed.indexOf('?') < 0 ? '?' : '&') + 'enablejsapi=1&origin=' +
+        encodeURIComponent(location.origin));
       stage.appendChild(df);
       ctl.appendChild(btn('use the proxied embed instead', '', function () { state.mode = 'embed'; mount(); }));
       if (muxed.length || vids.length) ctl.appendChild(btn('try native stream', '', function () { state.mode = muxed.length ? 'muxed' : 'dual'; mount(); }));
+      /* When the uploader has disabled embedding there is exactly one place
+         the video plays, and pretending otherwise wastes the viewer's time. */
+      if (d.videoId) {
+        ctl.appendChild(btn('open on youtube.com (last resort)', '', function () {
+          window.open('https://www.youtube.com/watch?v=' + d.videoId, '_blank', 'noopener');
+        }));
+      }
       readout.textContent = 'direct embed — this frame is loaded by your browser from youtube-nocookie.com, '
         + 'not through Umbra. YouTube sees your address, and that is why it plays.';
+      watchDirect(df);
       host.appendChild(stage); host.appendChild(ctl); host.appendChild(readout);
       return;
     }
