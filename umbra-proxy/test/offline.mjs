@@ -1531,6 +1531,33 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* In-process PO-token minting ran BotGuard's program and then looked for
+     its result on the wrong object: bgutils evaluates the challenge with
+     `new Function`, which defines the VM on the Node global, while the
+     lookup happened on a jsdom window we passed in. "VM not found" was the
+     two halves never meeting. Only checkable when jsdom is installed. */
+  {
+    const POT = await import('../server/potoken.mjs');
+    const haveJsdom = await import('jsdom').then(() => true, () => false);
+    if (haveJsdom) {
+      const g = await POT.installBrowserGlobals();
+      ok('botguard is given the same global the challenge actually defines itself on',
+        g === globalThis && typeof globalThis.window === 'object' &&
+        typeof globalThis.document === 'object',
+        'window=' + typeof globalThis.window + ' document=' + typeof globalThis.document);
+      ok('and it is not handed a user agent that announces a headless dom',
+        /Mozilla\/5\.0/.test(String(globalThis.navigator.userAgent)) &&
+        !/jsdom/i.test(String(globalThis.navigator.userAgent)),
+        String(globalThis.navigator.userAgent).slice(0, 70));
+    } else {
+      ok('po-token minting reports the missing piece rather than failing obscurely',
+        /not installed/.test(JSON.stringify(POT.inspect().sources)) ||
+        POT.inspect().sources.bgutils === null ||
+        typeof POT.inspect().sources.bgutils === 'string',
+        JSON.stringify(POT.inspect().sources));
+    }
+  }
+
   /* A button that cannot do what it says. With no extracted formats,
      "try native stream" fell back to the proxied embed and showed the
      embed's readout — so the reader concluded the native path had been

@@ -145,17 +145,58 @@ let bgWindow = null;
  * we say so plainly rather than failing in a way that looks like YouTube's
  * fault.
  */
+export async function installBrowserGlobals() { return bgGlobals(); }
+
 async function bgGlobals() {
   if (bgWindow) return bgWindow;
   try {
     const { JSDOM } = await import('jsdom');
-    const dom = new JSDOM('<!doctype html><html><body></body></html>',
-      { url: 'https://www.youtube.com/', referrer: 'https://www.youtube.com/', pretendToBeVisual: true });
+    /* jsdom's default user agent ends in "jsdom/x.y.z", which is a
+       self-report of exactly the thing BotGuard is looking for. Present the
+       browser the rest of this stack already claims to be. */
+    const UA = process.env.UMBRA_BG_UA ||
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+      'Chrome/129.0.0.0 Safari/537.36';
+    const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+      url: 'https://www.youtube.com/', referrer: 'https://www.youtube.com/',
+      pretendToBeVisual: true,
+    });
     const w = dom.window;
+    /* jsdom accepts a `userAgent` option only for its resource loader, and
+       silently keeps its own on `navigator` — verified, not assumed. The
+       property is configurable, so override it where it is actually read. */
+    try {
+      Object.defineProperty(w.navigator, 'userAgent', { value: UA, configurable: true });
+    } catch { /* nothing to do: a jsdom that refuses just looks like jsdom */ }
     /* jsdom has no fetch; the program needs one to collect its challenge */
     if (!w.fetch) w.fetch = (...a) => globalThis.fetch(...a);
-    bgWindow = w;
-    return w;
+
+    /* Why the window has to be installed globally rather than merely passed.
+     *
+     * BotGuard's challenge arrives as source text, and bgutils evaluates it
+     * with `new Function(...)`. That evaluates against the *Node* global, no
+     * matter which object we hand over as `globalObj` — so the VM the program
+     * defines lands on `globalThis`, while the lookup for it happens on the
+     * jsdom window. The two never meet, and the failure reads `VM not found`:
+     * the program ran perfectly and we looked for its result in the wrong
+     * place.
+     *
+     * So the browser globals go onto `globalThis`, and `globalThis` is what
+     * BotGuard is given. Node's own `navigator` (userAgent "Node.js/24")
+     * would mark us instantly, so it is replaced where the runtime allows.
+     */
+    const want = ['window', 'document', 'location', 'navigator', 'self',
+      'Element', 'HTMLElement', 'Node', 'XMLHttpRequest', 'customElements',
+      'HTMLFormElement', 'DOMParser', 'screen', 'history'];
+    for (const k of want) {
+      const v = w[k];
+      if (v === undefined) continue;
+      try {
+        Object.defineProperty(globalThis, k, { value: v, writable: true, configurable: true });
+      } catch { /* a runtime that refuses is one we work without */ }
+    }
+    bgWindow = globalThis;
+    return globalThis;
   } catch {
     /* no jsdom: try anyway, and let the failure name itself */
     return globalThis;
@@ -173,6 +214,7 @@ async function fromBgUtils(visitorData) {
     }
     const requestKey = 'O43z0dpjhgX20SCx4KAo';
     const win = await bgGlobals();
+    /* `win` is globalThis once the dom is installed; see bgGlobals. */
     const base = {
       fetch: (...a) => globalThis.fetch(...a),
       globalObj: win,
