@@ -38,7 +38,7 @@ import * as piped from './piped.mjs';
 import * as pipedLocal from './piped-local.mjs';
 import * as ytApi from './api-youtube.mjs';
 import * as pm from './provider-manager.mjs';
-import { modeFrom, mediaSrcFor } from './media-egress.mjs';
+import { modeFrom, mediaSrcFor, expiredMediaUrl } from './media-egress.mjs';
 import { verdict as ytVerdict } from './verdict.mjs';
 import * as tubeView from './tube-view.mjs';
 import { TUBE_CSS, ADMIN_CSS, providersDoc, homeDoc as tubeHome, searchDoc as tubeSearch, watchDoc as tubeWatch, channelDoc as tubeChannel, errorDoc as tubeError } from './tube.mjs';
@@ -317,6 +317,26 @@ const tt = (sec) => {
   const pad = (n, l = 2) => String(n).padStart(l, '0');
   return (h ? pad(h) + ':' : '') + pad(m) + ':' + pad(s2, 2) + '.' + pad(Math.round((s2 % 1) * 1000), 3);
 };
+
+/**
+ * Ask the providers for this video again and return a fresh wire url for
+ * the same rendition, or null when nothing comparable comes back.
+ */
+async function reResolveMedia(t, sess, mk) {
+  try {
+    const r = await pm.getStreams(String(t.v));
+    const d = (r && r.data) || {};
+    const all = [...(d.videoStreams || []), ...(d.audioStreams || [])].filter((f) => f && f.url);
+    if (!all.length) return null;
+    const same = all.find((f) => Number(f.itag) === Number(t.i)) || all[0];
+    const ctx = mk(same.url, 'm', t.t);
+    console.log(`umbra: re-minted an expired media url for ${t.v} (itag ${t.i} -> ${same.itag})`);
+    return href(ctx, same.url, 'm', { v: t.v, i: same.itag || 0, r: 1 });
+  } catch (e) {
+    console.log(`umbra: could not refresh the media url for ${t.v}: ${String(e && e.message).slice(0, 120)}`);
+    return null;
+  }
+}
 
 /* ==================================================== redirect policy == */
 /**
@@ -1599,6 +1619,28 @@ async function route(req, res) {
   if (MODES.has(head)) {
     const t = decodeToken(seg[1]);
     if (!t || t.s !== s.id || t.g !== s.gen) return fail(res, 403, 'bad token', 'signature, session or generation mismatch');
+
+    /* A media url YouTube signed is not a permanent address: `expire` is a
+       unix time a few hours out, and a long video outlives it mid-play.
+       The browser then gets a 403 it cannot interpret and the picture
+       simply stops. The token remembers which video and which itag it came
+       from, so the url can be minted again from scratch.
+       
+       Checked before the request, not after it: an expired url is a
+       certainty, not a possibility, and a wasted round trip to be told so
+       helps nobody. `r` marks a token that has already been re-resolved,
+       so a video that is genuinely gone cannot loop. */
+    if (head === 'm' && t.v && !t.r && expiredMediaUrl(t.u)) {
+      const fresh = await reResolveMedia(t, s, mkCtx);
+      if (fresh) {
+        return send(res, 302, {
+          location: fresh,
+          'cache-control': 'no-store',
+          ...metaHeaders({ kind: 'media-refresh', videoId: t.v, itag: t.i || 0 }),
+        }, '');
+      }
+    }
+
     const ctx = mkCtx(t.u, head, t.t);
     const mopts = { mode: head, range: req.headers.range || null };
     if (req.method && !/^(GET|HEAD)$/i.test(req.method)) {

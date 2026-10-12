@@ -1531,6 +1531,25 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* "Do not assume a url returned by the extractor is permanently valid."
+     googlevideo signs an `expire` into every media url; past it the CDN
+     403s everyone, and a long video outlives its own url mid-playback. */
+  {
+    const IX = await import('../server/media-egress.mjs');
+    const soon = Math.floor(Date.now() / 1000) + 30;
+    const later = Math.floor(Date.now() / 1000) + 7200;
+    ok('an expired googlevideo url is recognised before the request, not after',
+      IX.expiredMediaUrl('https://rr1---sn-x.googlevideo.com/videoplayback?expire=1000000') === true &&
+      IX.expiredMediaUrl(`https://rr1---sn-x.googlevideo.com/videoplayback?expire=${later}`) === false &&
+      /* inside the slack window: treat as already gone */
+      IX.expiredMediaUrl(`https://rr1---sn-x.googlevideo.com/videoplayback?expire=${soon}`) === true,
+      'expiry classification');
+    ok('and nothing else is second-guessed: other hosts and unsigned urls pass through',
+      IX.expiredMediaUrl('https://example.com/a.mp4?expire=1000000') === false &&
+      IX.expiredMediaUrl('https://rr1---sn-x.googlevideo.com/videoplayback?itag=18') === false &&
+      IX.expiredMediaUrl('not a url') === false);
+  }
+
   /* A silent film is not a video. One video-only rendition — what a gated
      address gets when YouTube relents slightly — must not end the chain
      while another backend might have sound. */

@@ -94,13 +94,17 @@ export function decodeToken(tok) {
 }
 
 /** wire path for a rewritten reference */
-export function href(ctx, absUrl, mode) {
+export function href(ctx, absUrl, mode, extra = null) {
   const tok = encodeToken({
     u: absUrl,
     t: ctx.tabId || 'anon',
     s: ctx.session || 'anon',
     g: ctx.gen || '',
     m: mode,
+    /* Optional claims. A media token that remembers which video it came
+       from can be re-resolved when the url behind it expires, instead of
+       handing the player a 403 it cannot interpret. */
+    ...(extra || {}),
   });
   let name = '';
   try {

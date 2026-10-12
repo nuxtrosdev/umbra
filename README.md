@@ -36,6 +36,29 @@ Umbra hands yt-dlp what it cannot know on its own: a minted PO token
 order via `UMBRA_YTDLP_CLIENTS`, and `UMBRA_YTDLP_PROXY` if egress needs to
 leave by another door.
 
+## The media wire (`/~umbra/m/<token>`)
+
+What it already does, point by point, because these are the details that make
+a video play or stall:
+
+* **Range in, 206 out.** The browser's `Range` header is copied upstream and
+  `Content-Range`, `Content-Length` and `Accept-Ranges` are copied back, with
+  the upstream status preserved — seeking works without the file being held
+  anywhere.
+* **Streamed, never buffered.** The upstream response is piped straight to the
+  browser; nothing accumulates in memory.
+* **Signed, session-bound, same-origin.** Tokens carry the upstream url and are
+  rejected across sessions, so no upstream url is ever exposed to the page.
+* **Redirects followed for subresources.** googlevideo hands off between hosts
+  constantly; only *document* hops are held for review.
+* **Private caching.** Media responses are `private`, never shared between
+  sessions.
+* **Expiring urls are re-minted.** googlevideo signs an `expire` into every
+  url. Rather than relaying a 403 the player cannot interpret, Umbra notices
+  the url is spent *before* using it, re-extracts the same rendition and
+  redirects to a fresh one (once — a token that has been refreshed is marked,
+  so a genuinely dead video cannot loop).
+
 ## Who pays for the video bytes (`UMBRA_MEDIA_EGRESS`)
 
 By default every byte of every stream is relayed by this origin: the visitor's

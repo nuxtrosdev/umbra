@@ -24,3 +24,24 @@ export const mediaSrcFor = (mode) => "media-src 'self' blob: data:" +
   /* A peer is whichever instance answered, and the pool is not fixed at
      boot, so this cannot be an explicit host list. It stays https-only. */
   (mode === 'peer' ? ' https:' : '');
+
+/* ------------------------------------------------------- media expiry ---
+ * googlevideo signs every url with an `expire` timestamp. Past it the CDN
+ * answers 403 to everyone, including the address that minted it - so this
+ * is not a bot wall and must not be reported as one. A long video outlives
+ * its own url mid-playback, and the browser's only symptom is that the
+ * picture stops.
+ *
+ * Lives here, beside the other media decisions and away from the server
+ * module, so it can be tested without starting a listener.
+ */
+export function expiredMediaUrl(raw, now = Date.now()) {
+  try {
+    const u = new URL(String(raw));
+    if (!/(^|\.)googlevideo\.com$/i.test(u.hostname)) return false;
+    const exp = Number(u.searchParams.get('expire') || 0);
+    if (!exp) return false;
+    /* a minute of slack: a url about to expire will expire mid-request */
+    return (exp * 1000) - 60000 <= now;
+  } catch { return false; }
+}

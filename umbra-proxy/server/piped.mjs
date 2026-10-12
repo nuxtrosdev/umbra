@@ -269,7 +269,10 @@ export function normItem(it, ctx) {
  * switching, dual-track sync and captions all work unchanged.
  */
 export function toPlayerPayload(s, ctx, videoId, instance) {
-  const wire = (f) => ({ ...f, wire: href(ctx, f.url, 'm') });
+  /* `v` and `i` travel with the token so an expired googlevideo url can be
+     re-extracted on demand: the signed urls YouTube issues die after a few
+     hours, and a long video outlives them mid-playback. */
+  const wire = (f) => ({ ...f, wire: href(ctx, f.url, 'm', { v: videoId, i: f.itag || 0 }) });
 
   const mk = (st, kind) => ({
     kind,
