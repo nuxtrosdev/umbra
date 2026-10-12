@@ -20,6 +20,10 @@
  */
 
 const BOT = /sign ?in to confirm|not a bot|LOGIN_REQUIRED|CONSENT_WALL|consent wall|confirm you'?re|age.?restrict/i;
+/* Formats were offered and we could not turn them into urls. That is the one
+   failure in this list that is entirely ours, so it must never be filed under
+   "the address is flagged" — the fix is in decipher.mjs, not in egress. */
+const OURS = /deciphering is failing|produced a url|player script|base\.js/i;
 const GATED = /no playable formats|no formats|formats were withheld|empty format|streamingData/i;
 /* YouTube saying the video is gone is not a diagnosis of us. It outranks
    everything else, because an unavailable video produces exactly the same
@@ -61,6 +65,21 @@ export function verdict(tried, { hasPoToken = false, hasCookies = false } = {}) 
         + 'deleted, private, members-only, region-locked, or an expired livestream '
         + 'recording. No token, cookie or backend changes it. Try another video to '
         + 'confirm extraction is healthy.',
+    };
+  }
+  /* Checked before the bot wall: when some backend was handed real formats,
+     the address demonstrably is not being refused outright, whatever else
+     is also true. */
+  if (any(OURS)) {
+    const said = notes.find((n) => OURS.test(n)) || '';
+    return {
+      kind: 'decipher',
+      headline: 'YouTube handed over formats and Umbra failed to unlock them.',
+      detail: 'A backend was given real formats for this video and could not turn them into '
+        + 'playable urls: ' + JSON.stringify(said.slice(0, 120)) + '. That is a bug on this side, '
+        + 'not a judgement about this address \u2014 the signature or n-parameter transform '
+        + 'extracted from the player script is probably stale. Re-run the probe to see the '
+        + 'player it is using, and compare against the one youtube is serving now.',
     };
   }
   if (any(BOT)) {

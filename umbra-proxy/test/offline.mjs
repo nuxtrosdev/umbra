@@ -1563,6 +1563,21 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* Which side failed: theirs or ours. */
+  {
+    const V = await import('../server/verdict.mjs');
+    const ours = V.verdict([{ provider: 'youtubejs',
+      note: '22 formats offered (0 plain, 22 ciphered) but 0 produced a url - deciphering is failing, not the gate' }], {});
+    ok('formats we could not unlock are our bug, never an accusation about the address',
+      ours && ours.kind === 'decipher' && !/IP address/.test(ours.headline),
+      ours && ours.kind);
+    const gate = V.verdict([{ provider: 'youtubejs',
+      note: 'youtube returned no formats at all (gated response, nothing to decipher)' },
+      { provider: 'watchpage', note: "LOGIN_REQUIRED: Sign in to confirm you're not a bot" }], {});
+    ok('and an empty answer plus a sign-in wall is still read as the wall',
+      gate && gate.kind === 'bot-wall', gate && gate.kind);
+  }
+
   /* An error that names the cause, not the bookkeeping. */
   {
     const { InstancePool, ProviderInstance } = await import('../server/providers/pool.mjs');

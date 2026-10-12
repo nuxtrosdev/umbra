@@ -258,7 +258,20 @@ export async function getStreams(videoId) {
       dash: info.streaming_data?.dash_manifest_url,
     }, { provider: id, instance: 'in-process' });
     if (!s || (!s.videoStreams.length && !s.audioStreams.length && !s.hls)) {
-      throw new Error('no playable formats after deciphering');
+      /* Two opposite failures wore the same sentence.
+         
+         "No playable formats after deciphering" was said both when YouTube
+         sent nothing — a gate, upstream, nothing to fix here — and when it
+         sent twenty formats that we then failed to turn into urls, which
+         would be entirely our bug. Those deserve different investigations,
+         so count them and say which happened. */
+      const plain = all.filter((f) => f.url).length;
+      const ciphered = all.filter((f) => !f.url && typeof f.decipher === 'function').length;
+      const won = deciphered.filter((x) => x.u).length;
+      throw new Error(all.length === 0
+        ? 'youtube returned no formats at all (gated response, nothing to decipher)'
+        : `${all.length} formats offered (${plain} plain, ${ciphered} ciphered) but ${won} produced a url`
+          + ' — deciphering is failing, not the gate');
     }
     return s;
   }, { capability: 'streams' });
