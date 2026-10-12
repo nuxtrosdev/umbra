@@ -400,6 +400,11 @@ document.addEventListener('securitypolicyviolation', (ev) => {
     return;
   }
   t.fails = 0;
+  /* The refused navigation can still surface as a load event on the old
+     frame a moment later, with an unreadable location. That is the corpse
+     of the hop we just followed, not a new escape — without this the tab
+     gets veiled with an error immediately after being rescued. */
+  t.cspFollowAt = Date.now();
   log('s', 'followed a blocked frame redirect onto the wire -> ' + shortU(target));
   goto(t, target, { push: true });
 });
@@ -426,6 +431,11 @@ function onFrameLoad(t) {
   const offOrigin = where === null && t.mode === 'wire';
   const offWire = t.mode === 'wire' && where && !where.startsWith(ORIGIN + PFX);
   if (offWire || offOrigin) {
+    if (t.cspFollowAt && Date.now() - t.cspFollowAt < 5000) {
+      /* already handled by the frame-src report, which knew the target */
+      t.cspFollowAt = 0;
+      return;
+    }
     if (t.pendingNav) {
       /* a shim-sanctioned navigation is already in flight toward a fresh
          frame — this load is the old frame's last gasp, not an escape */

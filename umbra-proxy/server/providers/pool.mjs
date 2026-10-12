@@ -202,10 +202,22 @@ export class InstancePool {
         log({ provider: this.provider, instance: inst.id, capability, ok: false, ms: nowMs() - t0, error: note });
       }
     }
+    /* Say what went wrong, not that something did.
+       
+       "no innertube instance answered" describes the pool's bookkeeping and
+       hides the only fact worth reading — that YouTube said LOGIN_REQUIRED,
+       or that the deciphering failed. For a one-instance local provider the
+       sentence was pure noise sitting where the diagnosis should be. Keep
+       the pool's framing only when there is genuinely nothing else to say. */
+    const last = tried.length ? tried[tried.length - 1] : null;
     const err = new Error(
       n === 0
         ? `every ${this.provider} instance is in cooldown`
-        : `no ${this.provider} instance answered`);
+        : last && last.note
+          ? (this.instances.length > 1 && last.instance
+            ? `${last.instance}: ${last.note}`
+            : last.note)
+          : `no ${this.provider} instance answered`);
     err.tried = tried;
     throw err;
   }

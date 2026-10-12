@@ -1563,6 +1563,26 @@ async function wire() {
       /default-src 'self'/.test(csp) && !/connect-src[^;]*youtube/.test(csp),
       (csp.split('; ').find((x) => x.startsWith('frame-src')) || '').slice(0, 90));
   }
+  /* An error that names the cause, not the bookkeeping. */
+  {
+    const { InstancePool, ProviderInstance } = await import('../server/providers/pool.mjs');
+    const one = new InstancePool('innertube', [new ProviderInstance('', 'innertube', { id: 'in-process', local: true })]);
+    let msg = '';
+    try {
+      await one.run(async () => { throw new Error('LOGIN_REQUIRED: Sign in to confirm'); });
+    } catch (e) { msg = e.message; }
+    ok('a single-instance provider reports what youtube said, not that a pool was empty',
+      /LOGIN_REQUIRED/.test(msg) && !/no innertube instance answered/.test(msg), msg);
+
+    const many = new InstancePool('invidious', ['https://a.example', 'https://b.example']);
+    let msg2 = '';
+    try {
+      await many.run(async () => { throw new Error('http 403'); });
+    } catch (e) { msg2 = e.message; }
+    ok('a multi-instance provider still names which instance spoke last',
+      /403/.test(msg2) && /example/.test(msg2), msg2);
+  }
+
   /* Redirects a page performs on itself, which no shim can intercept. */
   {
     const shellRes = await call('/');
@@ -1570,6 +1590,14 @@ async function wire() {
     ok('the shell frames its own origin only, so an escape is refused and reported',
       /frame-src 'self' blob:/.test(shellCsp) && !/frame-src[^;]*https:/.test(shellCsp),
       shellCsp.split(';').find((x) => /frame-src/.test(x)) || 'none');
+    /* …unless the operator asked for exactly that. The 'off' policy says a
+       tab may leave Umbra; the shell must not quietly make that impossible. */
+    const ix0 = fs.readFileSync(path.join(HERE, '..', 'server', 'index.mjs'), 'utf8');
+    ok('the \u201coff\u201d redirect policy still gets the wide frame-src it promises',
+      /CSP_SHELL_NATIVE/.test(ix0) && /follow === 'native'/.test(ix0) &&
+      /frame-src 'self' blob: http: https:/.test(ix0));
+    ok('and a frame redirect we followed is not then mistaken for an escape',
+      /cspFollowAt/.test(fs.readFileSync(path.join(HERE, '..', 'public', 'shell.js'), 'utf8')));
 
     const src = fs.readFileSync(path.join(HERE, '..', 'public', 'shell.js'), 'utf8');
     ok('a refused frame navigation is followed onto the wire, not mourned',

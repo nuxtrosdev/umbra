@@ -212,6 +212,10 @@ const CSP_SHELL = [
   "form-action 'self'",
   "base-uri 'self'",
 ].join('; ');
+/* The 'off' redirect policy promises a tab may leave Umbra entirely. That
+   cannot be true and `frame-src 'self'` at the same time, so the promise is
+   kept literally for the session that asked for it, and only for that one. */
+const CSP_SHELL_NATIVE = CSP_SHELL.replace("frame-src 'self' blob:", "frame-src 'self' blob: http: https:");
 const isHtml = (headers) => /text\/html/i.test(String((headers && headers['content-type']) || ''));
 
 /* Every runtime-minted wire url is absolute against this origin, so getting it
@@ -1180,13 +1184,22 @@ const STATIC = {
   '/~umbra/a/worker-shim.js': ['worker-shim.js', 'application/javascript; charset=utf-8'],
   '/~umbra/player.js': ['player.js', 'application/javascript; charset=utf-8'],
 };
-function serveStatic(res, key) {
+function serveStatic(res, key, sess = null) {
   const [file, ct] = STATIC[key];
   let body;
   try { body = fs.readFileSync(path.join(PUB, file)); } catch { return notFound(res, key); }
-  /* the shell document is the one thing that may host an uncloaked native tab,
-     so it gets its own (looser frame-src) policy instead of the document one */
-  const csp = key === '/' ? { 'content-security-policy': CSP_SHELL } : {};
+  /* The shell document is the one thing that may host an uncloaked native
+     tab — but only when the operator has actually asked for that. Under
+     every other policy the shell frames its own origin and nothing else,
+     which is both true and useful: the browser then refuses a page's
+     attempt to navigate the frame away and *reports where it was going*,
+     which is the only way to learn the target of a `location.href =` that
+     no shim can intercept. Keeping the wide policy on by default traded
+     that signal away for a freedom nobody had selected. */
+  const native = !!(sess && sess.policy && sess.policy.follow === 'native');
+  const csp = key === '/'
+    ? { 'content-security-policy': native ? CSP_SHELL_NATIVE : CSP_SHELL }
+    : {};
   send(res, 200, { 'content-type': ct, 'cache-control': 'no-cache', 'x-umbra-shell': '1', ...csp }, body);
 }
 /* one line per distinct violation, not one per occurrence: a page that
@@ -1255,12 +1268,12 @@ async function route(req, res) {
   }
 
   if (!p.startsWith(PFX)) {
-    if (STATIC[p] && req.method === 'GET') return serveStatic(res, p);
+    if (STATIC[p] && req.method === 'GET') return serveStatic(res, p, session(readSession(req)));
     return notFound(res, p);
   }
 
   // origin assets live under the wire prefix so nothing else is reachable
-  if (STATIC[p] && req.method === 'GET') return serveStatic(res, p);
+  if (STATIC[p] && req.method === 'GET') return serveStatic(res, p, session(readSession(req)));
 
   const sid = readSession(req);
   const seg = p.slice(PFX.length).split('/');
