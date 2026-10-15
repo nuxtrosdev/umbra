@@ -13,7 +13,7 @@
  */
 
 import { href } from './protocol.mjs';
-import { toPlayerPayload, unproxyImage } from './piped.mjs';
+import { toPlayerPayload, unproxyImage, canonicalThumb } from './piped.mjs';
 
 /* One chokepoint for every image Umbra Tube renders. Instances hand back
    thumbnails through their own image proxy; Umbra proxies the bytes itself,
@@ -35,7 +35,7 @@ export function toCard(v, ctx) {
     uploaded: v.publishedText || '',
     desc: v.description || '',
     isShort: !!v.short,
-    thumbWire: wireImg(ctx, best(v.thumbnails)),
+    thumbWire: wireImg(ctx, canonicalThumb(best(v.thumbnails), v.id)),
     avatarWire: wireImg(ctx, v.author && v.author.avatar),
   };
 }
@@ -131,7 +131,8 @@ export function toWatchPayload({ streams, video, related }, ctx, videoId) {
     likes: (v.metadata && v.metadata.likeCount) || 0,
     duration: s.duration || v.duration || 0,
     livestream: !!s.live,
-    thumbnailUrl: best(v.thumbnails),
+    thumbnailUrl: canonicalThumb(best(v.thumbnails), videoId),
+    proxyUrl: s.proxyUrl || null,
     hls: s.hls || null,
     dash: s.dash || null,
     videoStreams: s.videoStreams || [],

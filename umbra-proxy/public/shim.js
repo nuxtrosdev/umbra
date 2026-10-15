@@ -149,6 +149,7 @@
     try { return !!(el && el.getAttribute && el.getAttribute('data-umbra-direct')); } catch (e) { return false; }
   }
   var nativeSetAttribute = Element.prototype.setAttribute;
+  var nativeRemoveAttribute = Element.prototype.removeAttribute;
 
   step('refs', function () {
     function patch(proto, name, forceMode) {
@@ -161,13 +162,22 @@
         set: function (v) {
           if (isDirect(this)) return d.set.call(this, v);
           var mode = forceMode || modeFor(this, name);
-          var before = typeof v === 'string' && v.indexOf('umbra://') === 0 ? v : null;
+          var before = typeof v === 'string' && /^umbra:\/\//i.test(v.trim()) ? v.trim() : null;
+          if ((name === 'action' || name === 'formAction') && before) {
+            /* Even a script-assigned custom-scheme form target triggers a
+               mixed-content warning before our submit listener can route it. */
+            nativeSetAttribute.call(this, 'data-umbra-action', before);
+            return d.set.call(this, '#');
+          }
+          if ((name === 'action' || name === 'formAction') && nativeRemoveAttribute) {
+            nativeRemoveAttribute.call(this, 'data-umbra-action');
+          }
           d.set.call(this, wire(v, mode));
           /* keep the logical address beside it so clicks route exactly, even
              for anchors the page built itself. Never derive it from an
              already-wire value: logical() can only translate real refs, and a
              wire path translated again is a garbage address. */
-          if (name === 'href' || name === 'src' || name === 'action') {
+          if (name === 'href' || name === 'src' || name === 'action' || name === 'formAction') {
             var lg = before || (!onWire(v) && logical(v));
             if (lg) { try { nativeSetAttribute.call(this, 'data-umbra', lg); } catch (e) {} }
           }
@@ -184,6 +194,8 @@
     patch(HTMLMediaElement.prototype, 'src', 'm');
     patch(HTMLInputElement.prototype, 'src');
     patch(HTMLFormElement.prototype, 'action', 'f');
+    patch(HTMLInputElement.prototype, 'formAction', 'f');
+    patch(window.HTMLButtonElement && window.HTMLButtonElement.prototype, 'formAction', 'f');
     patch(HTMLObjectElement.prototype, 'data');
     /* srcdoc hands the parser a whole document: nothing else sees it */
     var sd = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'srcdoc');
@@ -218,11 +230,18 @@
       }
       if (MODE_BY_ATTR[n] || (this.tagName === 'SOURCE' && n === 'src')) {
         if (n === 'href') { var lg = logical(value); if (lg) nativeSetAttribute.call(this, 'data-umbra', lg); }
-        /* form actions keep their logical twin too, so submits route from the
-           real destination instead of re-translating the opaque wire token */
-        if ((n === 'action' || n === 'formaction') && !onWire(value)) {
-          var lg2 = logical(value);
-          if (lg2) nativeSetAttribute.call(this, 'data-umbra', lg2);
+        /* Form actions keep their logical twin. Umbra-native actions must
+           never be installed as native targets, including at runtime. */
+        if (n === 'action' || n === 'formaction') {
+          if (/^umbra:\/\//i.test(String(value).trim())) {
+            nativeSetAttribute.call(this, 'data-umbra-action', String(value).trim());
+            return nativeSetAttribute.call(this, name, '#');
+          }
+          if (nativeRemoveAttribute) nativeRemoveAttribute.call(this, 'data-umbra-action');
+          if (!onWire(value)) {
+            var lg2 = logical(value);
+            if (lg2) nativeSetAttribute.call(this, 'data-umbra', lg2);
+          }
         }
         return nativeSetAttribute.call(this, name, wire(value, modeFor(this, n)));
       }
@@ -436,15 +455,25 @@
       if (!f || !f.tagName || f.tagName !== 'FORM') return;
       var submitter = null;
       try { submitter = ev.submitter || null; } catch (e0) { submitter = null; }
-      var fa = (submitter && submitter.getAttribute && submitter.getAttribute('formaction')) || f.getAttribute('action');
-      if (fa && fa.indexOf('umbra://') === 0) {
-        /* a umbra-native action (the portal search box) resolves through the shell */
+      var override = submitter && submitter.getAttribute && submitter.getAttribute('formaction');
+      /* A rewritten action is "#" to the browser, with its actual destination
+         in data-umbra-action. Per-button overrides take precedence over the
+         form, even when the button has an ordinary (non-Umbra) target. */
+      var fa = override !== null && override !== undefined
+        ? (submitter.getAttribute('data-umbra-action') || override)
+        : (f.getAttribute('data-umbra-action') || f.getAttribute('action'));
+      if (fa && /^umbra:\/\//i.test(fa)) {
+        /* An Umbra-native GET is a shell navigation, never a native submit. */
         ev.preventDefault();
         try {
+          var dest = new URL(fa);
           var sp = new URLSearchParams();
-          new FormData(f).forEach(function (v, k) { if (typeof v === 'string') sp.append(k, v); });
-          var qs = sp.toString();
-          post('nav', { url: fa.replace(/\/$/, '') + '/' + (qs ? '?' + qs : '') });
+          var nativeFields;
+          try { nativeFields = submitter ? new FormData(f, submitter) : new FormData(f); }
+          catch (e0) { nativeFields = new FormData(f); }
+          nativeFields.forEach(function (v, k) { if (typeof v === 'string') sp.append(k, v); });
+          if (sp.toString()) dest.search = sp.toString();
+          post('nav', { url: dest.href });
         } catch (e) {}
         return;
       }
@@ -609,7 +638,7 @@
             n.setAttribute('data-umbra-frame', '1');
             if (/^(IFRAME|FRAME)$/.test(n.tagName)) ADOPT.adoptNode(n);
           }
-          if (n.tagName === 'FORM') {
+          if (n.tagName === 'FORM' && !n.getAttribute('data-umbra-action')) {
             var a = n.getAttribute('action');
             if (a && !onWire(a) && a.indexOf('umbra://') !== 0) n.setAttribute('action', wire(a, 'f'));
           }
@@ -638,21 +667,40 @@
     }
     function mw(html) {
       html = String(html == null ? '' : html);
-      if (!/https?:\/\/|url\s*\(|srcdoc/i.test(html)) return html;
-      /* an srcdoc attribute embeds a whole document, entity-encoded */
+      if (!/https?:\/\/|umbra:\/\/|url\s*\(|srcdoc/i.test(html)) return html;
+      /* An srcdoc attribute embeds another HTML document, entity-encoded.
+         Rewriting its decoded markup is not enough: the outer attribute pass
+         must NOT see `action=&quot;#&quot;` inside that encoded value and
+         try to rewrite it a second time. Mask each srcdoc until it finishes. */
+      var srcdocs = [];
       html = html.replace(/\bsrcdoc\s*=\s*("([^"]*)"|'([^']*)')/gi, function (w0, _q, dq, sq) {
         var v = dq !== undefined ? dq : sq;
-        if (!v) return w0;
-        var dec = v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-        if (!/https?:\/\//i.test(dec)) return w0;
-        var enc = mw(dec).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-        return w0.slice(0, w0.indexOf('=')) + '="' + enc + '"';
+        var next = w0;
+        if (v) {
+          var dec = v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+          if (/https?:\/\/|umbra:\/\//i.test(dec)) {
+            var enc = mw(dec).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            next = w0.slice(0, w0.indexOf('=')) + '="' + enc + '"';
+          }
+        }
+        srcdocs.push(next);
+        return '\u0001umbra-srcdoc-' + (srcdocs.length - 1) + '\u0002';
       });
       var out = html.replace(ATTR_RE, function (m0, nameRaw, quoted, dq, sq, bare, off) {
         var name = String(nameRaw).toLowerCase();
         var value = dq !== undefined ? dq : (sq !== undefined ? sq : bare);
         var q = dq !== undefined ? '"' : (sq !== undefined ? "'" : '');
+        if (/^umbra:\/\//i.test(String(value).trim()) && (name === 'action' || name === 'formaction')) {
+          var lt = html.lastIndexOf('<', off);
+          var tag = lt >= 0 ? ((html.slice(lt + 1, lt + 24).match(/^[\w:-]+/) || [''])[0]).toLowerCase() : '';
+          if ((name === 'action' && tag === 'form') ||
+              (name === 'formaction' && (tag === 'button' || tag === 'input'))) {
+            var lg = value.trim().replace(/&(?!#\d+;|#x[0-9a-f]+;|[a-z][a-z0-9]+;)/gi, '&amp;')
+              .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            return name + '="#" data-umbra-action="' + lg + '"';
+          }
+        }
         if (!value || onWire(value)) return m0;
         if (SKIP.test(value.trim())) return m0;
         if (SRCSET_LIKE.test(name)) {
@@ -670,7 +718,7 @@
         var w = wire(u, 's');
         return w === 'about:blank' ? 'none' : 'url(' + q1 + w + q1 + ')';
       });
-      return out;
+      return out.replace(/\u0001umbra-srcdoc-(\d+)\u0002/g, function (m0, n) { return srcdocs[+n] || m0; });
     }
     window.__umbraMarkup = mw;
 

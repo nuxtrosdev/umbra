@@ -227,6 +227,8 @@ const server = http.createServer((req, res) => {
   if (p === '/page2' || p === '/sub/page2') return send(res, 200, { 'content-type': 'text/html' }, '<!doctype html><title>p2</title><h1>page two</h1>');
   if (p === '/other') return send(res, 200, { 'content-type': 'text/html' }, '<!doctype html><title>other</title><h1>other host doc</h1>');
   if (p === '/frame') return send(res, 200, { 'content-type': 'text/html' }, '<!doctype html><title>framed</title><a href="/page2">x</a>');
+  if (p === '/nested-context') return send(res, 200, { 'content-type': 'text/html' },
+    `<!doctype html><title>parent</title><h1>parent context</h1><iframe id="child-context" src="http://localhost:${PORT}/frame"></iframe>`);
   /* native-hop probes: location.href= is [Unforgeable], so these navigate the
      frame for real and the shell must adopt (or, for the loop, veil) */
   if (p === '/escape-test') return send(res, 200, { 'content-type': 'text/html' },
@@ -240,6 +242,16 @@ const server = http.createServer((req, res) => {
   if (p === '/photo.jpg' || p === '/thumb.jpg') return send(res, 200, { 'content-type': 'image/jpeg' }, JPG);
   if (p === '/clip.mp4' || p === '/v18.mp4' || p === '/v137.mp4' || p === '/a140.m4a') {
     return serveRange(req, res, CLIP, p.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4');
+  }
+  /* A Piped media proxy, not the direct CDN. Requiring its `host` parameter
+     means the offline test fails if Umbra rewrites only the hostname but
+     drops the CDN host Piped needs to fetch the signed stream. */
+  if (p === '/videoplayback') {
+    HITS.push({ path: p, host: u.searchParams.get('host'), range: req.headers.range || null });
+    if (u.searchParams.get('host') !== 'rr1---sn-test.googlevideo.com') {
+      return send(res, 400, { 'content-type': 'text/plain' }, 'missing original CDN host');
+    }
+    return serveRange(req, res, CLIP, 'video/mp4');
   }
   if (p === '/tone.wav') return serveRange(req, res, TONE, 'audio/wav');
   /* An HLS presentation: a master playlist pointing at a media playlist
@@ -441,6 +453,17 @@ const server = http.createServer((req, res) => {
     /* The failure the user actually hit: a Piped instance answering 200 with
        a complete-looking payload and empty stream arrays. */
     if (p.slice(9) === 'DeadLive123') return send(res, 404, { 'content-type': 'text/plain' }, 'not found');
+    if (p.slice(9) === 'PipedProxy1') {
+      return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
+        title: 'Mock proxied Piped video', uploader: 'Mock Channel', duration: 212,
+        thumbnailUrl: `${base}/thumb.jpg`, proxyUrl: base, livestream: false,
+        videoStreams: [{
+          url: 'https://rr1---sn-test.googlevideo.com/videoplayback?expire=9999999999&itag=18&sig=abc%2B',
+          itag: 18, videoOnly: false, quality: '360p', mimeType: 'video/mp4',
+        }],
+        audioStreams: [],
+      }));
+    }
     if (p.slice(9) === 'EmptyFmts12') {
       return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify({
         title: 'Mock Piped Video', uploader: 'Mock Channel', uploaderUrl: '/channel/UCmock',
@@ -524,7 +547,7 @@ const server = http.createServer((req, res) => {
     /* One id exercises the watch page as an extraction surface. Without a
        consent cookie the real site serves a wall instead of the page, and an
        extractor that does not send one reads that as a block. */
-    if (u.searchParams.get('v') === NOSTREAM) {
+    if (u.searchParams.get('v') === NOSTREAM || u.searchParams.get('v') === 'PipedProxy1') {
       /* the bot wall, on the surface that is usually the last one standing */
       return send(res, 200, { 'content-type': 'text/html; charset=utf-8' },
         '<!doctype html><html><body><div>LOGIN_REQUIRED: Sign in to confirm you\u2019re not a bot</div></body></html>');
@@ -849,7 +872,7 @@ const server = http.createServer((req, res) => {
       }
       /* the all-gated id: every client, every time, urls withheld — which is
          what a bot-scored address actually gets back */
-      if (body.videoId === NOSTREAM) {
+      if (body.videoId === NOSTREAM || body.videoId === 'PipedProxy1') {
         return send(res, 200, { 'content-type': 'application/json' }, JSON.stringify(stripUrls(pr)));
       }
       /* gated clients get the stripped-url treatment; others get real urls */

@@ -26,7 +26,7 @@
  * of collapsing into "Piped is down".
  */
 import { upstream, readBody } from './net.mjs';
-import { href } from './protocol.mjs';
+import { href, toUmbra } from './protocol.mjs';
 import { handle as localHandle } from './piped-local.mjs';
 
 /* The instance Umbra runs itself (piped-local.mjs), addressed in-process so
@@ -243,9 +243,42 @@ export function unproxyImage(raw) {
   return s;
 }
 
+/**
+ * Piped's proxy fetches a signed Googlevideo URL from the *instance's* egress
+ * address. Preserve its path/query and tell the proxy which CDN host to use;
+ * only Googlevideo tracks need this rewrite. Returns null for other sources
+ * so a working non-Google media URL is never redirected to Piped by mistake.
+ */
+export function mediaThroughProxy(raw, proxyBase) {
+  if (!raw || !proxyBase) return null;
+  try {
+    const u = new URL(raw);
+    const p = new URL(proxyBase);
+    if (!/^https?:$/.test(u.protocol) || !/^https?:$/.test(p.protocol) ||
+        !/(^|\.)googlevideo\.com$/i.test(u.hostname)) return null;
+    const out = new URL(u.pathname + u.search, p.origin);
+    out.searchParams.set('host', u.hostname);
+    return out.href;
+  } catch { return null; }
+}
+
+/** Dead Piped thumbnail proxies fall back to the video's canonical image. */
+export function canonicalThumb(raw, videoId) {
+  const fallback = /^[\w-]{11}$/.test(String(videoId || ''))
+    ? 'https://i.ytimg.com/vi/' + videoId + '/hqdefault.jpg' : '';
+  if (!raw) return fallback;
+  try {
+    const u = new URL(raw);
+    if (fallback && (u.searchParams.get('host') === 'i.ytimg.com' ||
+        /(^|\.)(proxy\.piped\.|pipedproxy\.)/i.test(u.hostname))) return fallback;
+  } catch {}
+  return unproxyImage(raw);
+}
+
 /** Normalise one list item (search / trending / related / channel video). */
 export function normItem(it, ctx) {
   const id = videoIdOf(it.url);
+  const thumb = canonicalThumb(it.thumbnail, id);
   return {
     videoId: id,
     title: it.title || '',
@@ -257,8 +290,8 @@ export function normItem(it, ctx) {
     uploaded: it.uploadedDate || it.uploaded || '',
     desc: it.shortDescription || '',
     isShort: !!it.isShort,
-    thumb: unproxyImage(it.thumbnail || ''),
-    thumbWire: it.thumbnail ? href(ctx, unproxyImage(it.thumbnail), 's') : null,
+    thumb,
+    thumbWire: thumb ? href(ctx, thumb, 's') : null,
     avatarWire: it.uploaderAvatar ? href(ctx, unproxyImage(it.uploaderAvatar), 's') : null,
   };
 }
@@ -274,32 +307,36 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
      hours, and a long video outlives them mid-playback. */
   const wire = (f) => ({ ...f, wire: href(ctx, f.url, 'm', { v: videoId, i: f.itag || 0 }) });
 
-  const mk = (st, kind) => ({
-    kind,
-    itag: st.itag || 0,
-    mime: st.mimeType || '',
-    url: st.url,
-    label: st.quality || '',
-    quality: st.quality || '',
-    fps: num(st.fps),
-    codecs: st.codec || '',
-    contentLength: num(st.contentLength),
-    bitrate: num(st.bitrate),
-    width: num(st.width),
-    height: num(st.height),
-    audioOnly: kind === 'audio',
-    format: st.format || '',
-    /* Three ways to the same bytes, and the page picks per the operator's
-       setting:
-         wire   this origin relays them       — costs us every byte
-         peer   a public instance relays them — costs us nothing
-         direct googlevideo straight to them  — costs us nothing, usually 403s
-       `direct` is offered because it is free when it works (progressive
-       formats on a <video> element need no CORS at all) and because the
-       player can fall back the moment it does not. */
-    peer: st.peer || null,
-    direct: /(^|\.)googlevideo\.com/i.test(String(st.url || '')) ? st.url : null,
-  });
+  const mk = (st, kind) => {
+    /* A Piped extractor's raw Googlevideo URL can be bound to *its* egress IP.
+       Send even Umbra's own wire fetch through the media proxy it supplied;
+       retain the original URL solely for the optional direct egress mode. */
+    const proxied = mediaThroughProxy(st.url, s.proxyUrl);
+    let direct = null;
+    try {
+      if (/(^|\.)googlevideo\.com$/i.test(new URL(st.url).hostname)) direct = st.url;
+    } catch {}
+    return {
+      kind,
+      itag: st.itag || 0,
+      mime: st.mimeType || '',
+      url: proxied || st.url,
+      label: st.quality || '',
+      quality: st.quality || '',
+      fps: num(st.fps),
+      codecs: st.codec || '',
+      contentLength: num(st.contentLength),
+      bitrate: num(st.bitrate),
+      width: num(st.width),
+      height: num(st.height),
+      audioOnly: kind === 'audio',
+      format: st.format || '',
+      /* Three ways to the same bytes: wire (this origin), peer (the public
+         proxy directly), and direct (Googlevideo; often IP-bound/403). */
+      peer: st.peer || proxied || null,
+      direct,
+    };
+  };
 
   const vs = Array.isArray(s.videoStreams) ? s.videoStreams : [];
   const as = Array.isArray(s.audioStreams) ? s.audioStreams : [];
@@ -327,7 +364,7 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
       };
     });
 
-  const thumb = unproxyImage(s.thumbnailUrl || '');
+  const thumb = canonicalThumb(s.thumbnailUrl, videoId);
   const ok = !!(muxed.length || video.length);
 
   return {
@@ -370,7 +407,8 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
        nothing this is what the page plays. It honours the YouTube base
        override for the same reason every other YouTube call does — a test
        that cannot reach the surface cannot prove it works. */
-    embedDoc: href(ctx, NOCOOKIE_BASE() + '/embed/' + videoId, 'd'),
+    embedDoc: href(ctx, NOCOOKIE_BASE() + '/embed/' + videoId, 'd',
+      toUmbra(NOCOOKIE_BASE() + '/embed/' + videoId)),
     /* The address behind that token. A wire token is signed by the running
        server and bound to the live session, so it dies when the server
        restarts — the page in the browser does not. Keeping the logical url
@@ -381,7 +419,8 @@ export function toPlayerPayload(s, ctx, videoId, instance) {
     directEmbed: !/^(0|false|no|off)$/i.test(process.env.UMBRA_DIRECT_EMBED || '')
       ? 'https://www.youtube-nocookie.com/embed/' + videoId + '?rel=0&modestbranding=1'
       : null,
-    watchDoc: href(ctx, YT_WATCH_BASE() + '/watch?v=' + videoId, 'd'),
+    watchDoc: href(ctx, YT_WATCH_BASE() + '/watch?v=' + videoId, 'd',
+      toUmbra(YT_WATCH_BASE() + '/watch?v=' + videoId)),
   };
 }
 

@@ -199,8 +199,11 @@ function mountFrame(t, spec) {
   f.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture');
   f.setAttribute('referrerpolicy', 'no-referrer');
   f.setAttribute('fetchpriority', 'high');
-  f.addEventListener('load', () => onFrameLoad(t));
+  /* Replaced frames can still dispatch a late load/error after removal. Do
+     not let an obsolete browsing context revert or mark the new one ready. */
+  f.addEventListener('load', () => { if (t.frame === f) onFrameLoad(t); });
   f.addEventListener('error', () => {
+    if (t.frame !== f) return;
     t.loading = false;
     clearWatchdog(t);
     renderTab(t); renderStatus();
@@ -619,14 +622,17 @@ addEventListener('message', async (ev) => {
       break;
     }
     case 'title': {
-      if (!t) return;
+      if (!t || (ev.source && ev.source !== t.frame?.contentWindow)) return;
       if (d.title) t.title = d.title.trim().slice(0, 120);
       renderStrip();
       renderOuterTitle();
       break;
     }
     case 'ready': {
-      if (!t) return;
+      /* A nested child or a replaced frame may send its delayed ready after
+         the tab has navigated elsewhere. Only the current tab frame owns the
+         address bar; nested frames still retain their own UMBRA.url/base. */
+      if (!t || (ev.source && ev.source !== t.frame?.contentWindow)) return;
       if (d.url && d.url !== t.url) { t.url = d.url; }
       t.loading = false;
       clearWatchdog(t);

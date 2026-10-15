@@ -95,18 +95,24 @@ export function decodeToken(tok) {
   }
 }
 
-/** wire path for a rewritten reference */
-export function href(ctx, absUrl, mode, extra = null) {
+/**
+ * Wire path for a rewritten reference. The fourth argument is either extra
+ * signed claims (media uses { v, i, r }) or a document's logical umbra URL.
+ * A nested document can be fetched from one URL yet have a different logical
+ * base; its `l` claim survives the iframe boundary without being inherited
+ * from the parent page.
+ */
+export function href(ctx, absUrl, mode, extraOrLogicalUrl = null) {
+  const claims = typeof extraOrLogicalUrl === 'string'
+    ? { l: extraOrLogicalUrl }
+    : (extraOrLogicalUrl || {});
   const tok = encodeToken({
     u: absUrl,
     t: ctx.tabId || 'anon',
     s: ctx.session || 'anon',
     g: ctx.gen || '',
     m: mode,
-    /* Optional claims. A media token that remembers which video it came
-       from can be re-resolved when the url behind it expires, instead of
-       handing the player a 403 it cannot interpret. */
-    ...(extra || {}),
+    ...claims,
   });
   let name = '';
   try {

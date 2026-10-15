@@ -168,15 +168,7 @@ export async function trending(region = 'US') {
  * to a browser elsewhere: it 403s. The proxy is the fix, not a nicety.
  */
 export function viaProxy(proxyBase, raw) {
-  if (!proxyBase || !raw) return null;
-  try {
-    const u = new URL(raw);
-    if (!/(^|\.)googlevideo\.com$/i.test(u.hostname)) return null;
-    const base = new URL(String(proxyBase));
-    const out = new URL(u.pathname + u.search, base.origin);
-    out.searchParams.set('host', u.hostname);
-    return out.toString();
-  } catch { return null; }
+  return piped.mediaThroughProxy(raw, proxyBase);
 }
 
 export async function getStreams(videoId) {
@@ -200,6 +192,7 @@ export async function getStreams(videoId) {
       })),
       hls: j.hls,
       dash: j.dash,
+      proxyUrl: j.proxyUrl,
     }, { provider: id, instance: inst });
     if (!s) throw new Error('stream payload failed validation');
     return s;

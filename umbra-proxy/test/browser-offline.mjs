@@ -12,10 +12,13 @@
  *
  *   node umbra-proxy/test/browser-offline.mjs
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { pipeline } from 'node:stream/promises';
+import { createBrotliDecompress } from 'node:zlib';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -64,20 +67,49 @@ async function launchBrowser() {
     process.exit(2);
   }
   const Chromium = sparticuz.default || sparticuz;
+  /* executablePath is the public extraction API. Older builds exposed
+     inflate/setupLambdaEnvironment as helpers; current builds do not. */
   const exe = await Chromium.executablePath();
-  const entry = require.resolve('@sparticuz/chromium');
-  await sparticuz.inflate(path.join(path.dirname(entry), '..', 'bin', 'al2023.tar.br'));
-  sparticuz.setupLambdaEnvironment(path.join(tmpdir(), 'al2023', 'lib'));
-  return core.chromium.launch({ executablePath: exe, args });
+  const env = { ...process.env };
+  /* Outside Lambda the packaged browser can lack system NSS libraries. The
+     package includes them in al2023.tar.br but only extracts them automatically
+     on Lambda. Unpack that archive if ldd reports a missing dependency, and
+     pass its lib dir to the browser process (not the app or test runner). */
+  if (process.platform === 'linux' && /not found/.test(spawnSync('ldd', [exe], { encoding: 'utf8' }).stdout || '')) {
+    const archive = path.resolve(path.dirname(require.resolve('@sparticuz/chromium')), '../../bin/al2023.tar.br');
+    if (fs.existsSync(archive)) {
+      const dir = path.join(os.tmpdir(), 'al2023');
+      const lib = path.join(dir, 'lib');
+      if (!fs.existsSync(path.join(lib, 'libnspr4.so'))) {
+        fs.mkdirSync(dir, { recursive: true });
+        await pipeline(fs.createReadStream(archive), createBrotliDecompress(), require('tar-fs').extract(dir));
+      }
+      env.LD_LIBRARY_PATH = [lib, env.LD_LIBRARY_PATH].filter(Boolean).join(':');
+      console.log('(using packaged Chromium libraries from ' + lib + ')');
+    }
+  }
+  return core.chromium.launch({ executablePath: exe, args, env });
 }
 
 const browser = await (async () => {
-  kids.push(spawn(process.execPath, [path.join(HERE, 'mock-upstream.mjs'), String(MOCK_PORT)], { stdio: ['ignore', 'pipe', 'pipe'] }));
-  kids.push(spawn(process.execPath, [path.join(HERE, '..', 'server', 'index.mjs')],
-    { env: { ...process.env, PORT: String(UMBRA_PORT), UMBRA_YT_BASE: MOCK }, stdio: ['ignore', 'pipe', 'pipe'] }));
-  await waitFor(`${MOCK}/health`, 'mock upstream');
-  await waitFor(`${BASE}/~umbra/boot`, 'umbra origin');
-  return launchBrowser();
+  try {
+    kids.push(spawn(process.execPath, [path.join(HERE, 'mock-upstream.mjs'), String(MOCK_PORT)], { stdio: ['ignore', 'pipe', 'pipe'] }));
+    kids.push(spawn(process.execPath, [path.join(HERE, '..', 'server', 'index.mjs')],
+      { env: {
+        ...process.env, PORT: String(UMBRA_PORT), UMBRA_YT_BASE: MOCK,
+        /* Browser media and search checks must not depend on a live Piped pool
+           or accidentally send the mock video id to real YouTube instances. */
+        UMBRA_PIPED_INSTANCES: MOCK, UMBRA_PROVIDERS: 'piped', UMBRA_DIRECT_EMBED: '0',
+      }, stdio: ['ignore', 'pipe', 'pipe'] }));
+    await waitFor(`${MOCK}/health`, 'mock upstream');
+    await waitFor(`${BASE}/~umbra/boot`, 'umbra origin');
+    return launchBrowser();
+  } catch (e) {
+    /* Startup failures happen before the main try/finally below. Without this
+       guard, a missing browser dependency leaves the mock ports occupied. */
+    for (const k of kids) { try { k.kill('SIGTERM'); } catch {} }
+    throw e;
+  }
 })();
 
 const ctx = await browser.newContext({ viewport: { width: 1360, height: 860 } });
@@ -156,6 +188,27 @@ try {
   ok('in-page link click moved the umbra tab', (await addr()) !== before, before + ' → ' + await addr());
   ok('click added no history entry', (await hist()) === hist0, String(await hist()));
 
+  /* A nested document fetched from a different upstream host must not
+     inherit the enclosing page's logical base. Runtime refs originate there. */
+  await go(U('/nested-context'), 3500);
+  const childContext = await inDoc((d) => {
+    const child = d.querySelector('#child-context')?.contentWindow?.UMBRA;
+    return child ? { parent: d.defaultView.UMBRA.url, url: child.url, wire: child.wire('/get?via=child', 'x') } : null;
+  });
+  ok('nested iframe owns its logical host rather than inheriting its parent’s',
+    childContext?.parent === U('/nested-context') &&
+    childContext?.url === `umbra://localhost:${MOCK_PORT}/frame`, JSON.stringify(childContext));
+  const childWire = childContext?.wire?.match(/\/~umbra\/p\/x\/([^/?]+)/)?.[1];
+  ok('nested iframe runtime requests resolve against its own upstream host',
+    !!childWire && Buffer.from(childWire, 'base64url').toString() === `https://localhost:${MOCK_PORT}/get?via=child`,
+    childContext?.wire || 'missing');
+  await inDoc((d, port) => {
+    d.querySelector('#child-context').src = `http://localhost:${port}/frame?reload=1`;
+  }, MOCK_PORT);
+  await page.waitForTimeout(1100);
+  ok('nested child ready messages cannot replace the enclosing tab address',
+    (await addr()) === U('/nested-context'), await addr());
+
   /* -------------------------------------------------- images decode */
   await go(U('/'), 3500);
   const imgs = await inDoc((d) => [...d.querySelectorAll('img')].map((i) => ({ w: i.naturalWidth, o: i.currentSrc.startsWith(document.location.origin) || i.currentSrc.startsWith('data:') })));
@@ -206,6 +259,51 @@ try {
   await page.waitForTimeout(2800);
   ok('POST submit forwarded, response rendered in-frame', /hello from umbra/.test(await inDoc((d) => d.body.innerText)), (await txtIn('body')).slice(0, 80));
 
+  /* Umbra-authored logical form actions must be inert as native HTML (HTTPS
+     deployments warn about action="umbra://…"), but still submit logically. */
+  await go('umbra://tube/', 3300);
+  const tubeForm = await inDoc((d) => {
+    const f = d.querySelector('form.tsearch');
+    return f && { action: f.getAttribute('action'), logical: f.getAttribute('data-umbra-action') };
+  });
+  ok('Tube search form exposes a safe native action with a logical destination',
+    tubeForm?.action === '#' && tubeForm?.logical === 'umbra://tube/search', JSON.stringify(tubeForm));
+  await inDoc((d) => {
+    const f = d.querySelector('form.tsearch');
+    if (!f) return;
+    f.querySelector('input[name="q"]').value = 'proxy fixtures';
+    f.querySelector('button').click();
+  });
+  await page.waitForTimeout(3500);
+  ok('Tube search submits its logical action in the same tab',
+    /umbra:\/\/tube\/search\?q=proxy(?:\+|%20)fixtures/.test(await addr()), await addr());
+
+  /* Actual Chromium playback request: the fixture serves placeholder bytes,
+     not a decodable movie. Here we assert the network route, not decoding. */
+  await go('umbra://tube/watch?v=PipedProxy1', 5000);
+  const pipedPlayer = await inDoc((d) => {
+    const data = d.querySelector('#player')?.getAttribute('data-info');
+    return data ? JSON.parse(data) : null;
+  });
+  const pipedWire = pipedPlayer?.muxed?.[0]?.wire || '';
+  let mediaTarget = '';
+  try {
+    const signed = pipedWire.match(/\/~umbra\/m\/([^/?]+)/)[1];
+    mediaTarget = JSON.parse(Buffer.from(signed.split('.')[0], 'base64url').toString()).u;
+  } catch {}
+  ok('Chrome player defaults to the Piped proxy rather than the CDN',
+    pipedPlayer?.egress === 'wire' && mediaTarget.startsWith(MOCK + '/videoplayback?') &&
+    new URL(mediaTarget).searchParams.get('host') === 'rr1---sn-test.googlevideo.com',
+    JSON.stringify({ egress: pipedPlayer?.egress, mediaTarget }));
+  ok('browser requested the signed same-origin Piped media wire',
+    !!pipedWire && requests.some((u) => u.startsWith(BASE + pipedWire)),
+    requests.filter((u) => /\/~umbra\/m\//.test(u)).length + ' media requests');
+  const pipedHits = await (await fetch(MOCK + '/__hits')).json();
+  ok('a browser Range request reached Piped with the CDN host parameter',
+    pipedHits.some((h) => h.path === '/videoplayback' &&
+      h.host === 'rr1---sn-test.googlevideo.com' && /^bytes=/.test(h.range || '')),
+    JSON.stringify(pipedHits.filter((h) => h.path === '/videoplayback').slice(-2)));
+
   /* -------------------------------------------------- redirect: same tab */
   const t0 = await tabs();
   await go(U(`/redirect-to?url=${encodeURIComponent(`http://localhost:${MOCK_PORT}/other`)}&status_code=302`), 5500);
@@ -230,15 +328,20 @@ try {
   ok('localStorage write works but is memory-backed', /written at/.test(await txtIn('#o')), (await txtIn('#o')).slice(0, 50));
   ok('shell origin kept no storage from proxied sites', (await page.evaluate(() => Object.keys(localStorage).length)) === 0);
 
-  /* -------------------------------------------------- escape revert */
+  /* -------------------------------------------------- escape interception */
   const histBeforeEscape = await hist();
   await go('umbra://lab/js', 3000);
   await clickIn('button.go');
   await page.waitForTimeout(3500);
   ok('scripted off-origin location.href never moved the browser tab', page.url() === startUrl, page.url());
-  ok('frame reverted onto the wire', /lab\/js/.test(await addr()), await addr());
+  /* The shell now follows a frame-src refusal through the wire instead of
+     reverting to the page that tried to leave. The old assertion expected
+     lab/js, even though the ledger and document already showed example.com. */
+  ok('blocked frame navigation follows the target on the wire',
+    /umbra:\/\/example\.com\//.test(await addr()), await addr());
   const ledg = await page.$$eval('#logBody .entry', (n) => n.map((x) => x.textContent).join(' | '));
-  ok('reversion recorded in the ledger', /off-origin|revert|escape/i.test(ledg), ledg.slice(0, 120));
+  ok('the safe follow was recorded in the ledger',
+    /followed a blocked frame redirect onto the wire/i.test(ledg), ledg.slice(0, 120));
   ok('escape costs at most one joint-history entry', (await hist()) - histBeforeEscape <= 1);
 
   /* --------------------------------------- native-hop adoption (youtube pattern) */

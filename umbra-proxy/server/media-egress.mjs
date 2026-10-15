@@ -25,6 +25,21 @@ export const mediaSrcFor = (mode) => "media-src 'self' blob: data:" +
      boot, so this cannot be an explicit host list. It stays https-only. */
   (mode === 'peer' ? ' https:' : '');
 
+const GOOGLEVIDEO = /(^|\.)googlevideo\.com$/i;
+
+/** Only a *direct* Googlevideo media request needs YouTube's player headers. */
+export function youtubeMediaHeaders(raw, mode) {
+  if (mode !== 'm') return {};
+  try {
+    if (GOOGLEVIDEO.test(new URL(raw).hostname)) return {
+      referer: 'https://www.youtube.com/',
+      origin: 'https://www.youtube.com',
+      'sec-fetch-site': 'cross-site',
+    };
+  } catch {}
+  return {};
+}
+
 /* ------------------------------------------------------- media expiry ---
  * googlevideo signs every url with an `expire` timestamp. Past it the CDN
  * answers 403 to everyone, including the address that minted it - so this
@@ -38,7 +53,11 @@ export const mediaSrcFor = (mode) => "media-src 'self' blob: data:" +
 export function expiredMediaUrl(raw, now = Date.now()) {
   try {
     const u = new URL(String(raw));
-    if (!/(^|\.)googlevideo\.com$/i.test(u.hostname)) return false;
+    /* Piped's /videoplayback proxy carries the same signed Google URL's
+       expire and original host in its query. Refresh it just like a direct
+       Googlevideo token, but do not reinterpret arbitrary proxy assets. */
+    if (!GOOGLEVIDEO.test(u.hostname) &&
+        !(u.pathname === '/videoplayback' && GOOGLEVIDEO.test(u.searchParams.get('host') || ''))) return false;
     const exp = Number(u.searchParams.get('expire') || 0);
     if (!exp) return false;
     /* a minute of slack: a url about to expire will expire mid-request */

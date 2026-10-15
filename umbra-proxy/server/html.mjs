@@ -69,7 +69,7 @@ export function modeFor(tag, name) {
   if (name === 'poster') return 'm';
   if (name === 'srcset' && tag === 'source') return 'm';
   if (NAV_TAGS.has(tag) && (name === 'href' || name === 'xlink:href')) return 'd';
-  if (name === 'src' && tag === 'iframe') return 'd';
+  if (name === 'src' && (tag === 'iframe' || tag === 'frame')) return 'd';
   return 's';
 }
 
@@ -107,7 +107,9 @@ function rewriteValue(name, value, baseAbs, ctx, mode, tag) {
   }
   const abs = resolveRef(value, baseAbs);
   if (!abs) return null;
-  return href(ctx, abs, mode);
+  /* A navigable reference starts a new document. Give its signed token the
+     child's logical address instead of relying on the parent's context. */
+  return href(ctx, abs, mode, mode === 'd' ? toUmbra(abs) : null);
 }
 
 /**
@@ -298,11 +300,23 @@ export function rewriteHtml(html, o) {
           try { const abs = resolveRef(value, base); if (abs) logicalFor = toUmbra(abs); } catch {}
         }
         if (next === null) {
+          const v = value.trim();
+          /* The shim routes Umbra-native actions, but the browser classifies
+             a custom-scheme form target as insecure on HTTPS pages before it
+             even submits. Keep the logical destination out of the native
+             action attribute; the submit listener reads its inert twin. */
+          if ((name === 'action' && tag === 'form') ||
+              (name === 'formaction' && (tag === 'button' || tag === 'input'))) {
+            if (/^umbra:\/\//i.test(v)) {
+              const logical = v.replace(/&(?!#\d+;|#x[0-9a-f]+;|[a-z][a-z0-9]+;)/gi, '&amp;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+              return `${name}="#" data-umbra-action="${logical}"`;
+            }
+          }
           /* data:/blob:/about: never touch the network, so they are left
              exactly as authored: inerting them breaks inline icons for no
              cloaking gain. Schemes that *do* leave the browser (or hand control
              to another program) are neutralised. */
-          const v = value.trim();
           if (/^(javascript|vbscript|mailto|tel|sms|intent|file|geo|whatsapp|tg|magnet|slack|zoomus|obsidian|web\+sms)/i.test(v)) {
             if (name === 'href' || name === 'xlink:href') return `${name}="umbra:inert"`;
             if (name === 'src' || name === 'data' || name === 'action' || name === 'formaction') return `${name}="about:blank"`;

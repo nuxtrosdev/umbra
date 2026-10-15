@@ -319,7 +319,6 @@
          black rectangle. Send the origin, and only the origin. */
       df.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
       df.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
-      df.setAttribute('allowfullscreen', '');
       df.setAttribute('style', 'width:100%;aspect-ratio:16/9;border:0;display:block;background:#000');
       /* enablejsapi turns the frame from a black box into something that
          answers questions. Without it a refused embed and a working one
@@ -370,7 +369,7 @@
         /* YouTube's embedded player refuses with error 153 when it cannot see
            a Referer, so send the origin (and only the origin) with the frame. */
         referrerpolicy: 'strict-origin-when-cross-origin',
-        allowfullscreen: '', loading: 'lazy',
+        loading: 'lazy',
         style: 'width:100%;aspect-ratio:16/9;border:0;display:block;background:#000',
       });
       stage.appendChild(f);

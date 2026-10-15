@@ -22,7 +22,7 @@
  *     randomised per request.
  */
 import { upstream, readBody } from './net.mjs';
-import { href } from './protocol.mjs';
+import { href, toUmbra } from './protocol.mjs';
 import {
   LADDER,
   CLIENTS,
@@ -354,8 +354,14 @@ export async function inspect(url, ctx) {
     video: vids.slice(0, 8).map(withWire(ctx)),
     audio: auds.slice(0, 2).map(withWire(ctx)),
     captions: capTracks,
-    embedDoc: href(ctx, YT_BASE + '/embed/' + videoId + '?enablejsapi=1&rel=0&modestbranding=1', 'd'),
-    watchDoc: href(ctx, YT_BASE + '/watch?v=' + videoId, 'd'),
+    /* The fetch can use youtube.com while the embedded player is logically
+       on youtube-nocookie.com. The mock base keeps its own identity so offline
+       tests never resolve nested requests to the real YouTube network. */
+    embedDoc: href(ctx, YT_BASE + '/embed/' + videoId + '?enablejsapi=1&rel=0&modestbranding=1',
+      'd', toUmbra((YT_BASE === 'https://www.youtube.com' ? 'https://www.youtube-nocookie.com' : YT_BASE)
+        + '/embed/' + videoId)),
+    watchDoc: href(ctx, YT_BASE + '/watch?v=' + videoId, 'd',
+      toUmbra(YT_BASE + '/watch?v=' + videoId)),
     expires: Number(sd.expiresInSeconds || 0),
   };
 }

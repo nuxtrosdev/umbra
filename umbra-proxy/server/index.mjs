@@ -38,7 +38,7 @@ import * as piped from './piped.mjs';
 import * as pipedLocal from './piped-local.mjs';
 import * as ytApi from './api-youtube.mjs';
 import * as pm from './provider-manager.mjs';
-import { modeFrom, mediaSrcFor, expiredMediaUrl } from './media-egress.mjs';
+import { modeFrom, mediaSrcFor, expiredMediaUrl, youtubeMediaHeaders } from './media-egress.mjs';
 import { rewriteManifest } from './hls.mjs';
 import { verdict as ytVerdict } from './verdict.mjs';
 import * as tubeView from './tube-view.mjs';
@@ -365,9 +365,10 @@ async function reResolveMedia(t, sess, mk) {
     const all = [...(d.videoStreams || []), ...(d.audioStreams || [])].filter((f) => f && f.url);
     if (!all.length) return null;
     const same = all.find((f) => Number(f.itag) === Number(t.i)) || all[0];
-    const ctx = mk(same.url, 'm', t.t);
+    const url = piped.mediaThroughProxy(same.url, d.proxyUrl) || same.url;
+    const ctx = mk(url, 'm', t.t);
     console.log(`umbra: re-minted an expired media url for ${t.v} (itag ${t.i} -> ${same.itag})`);
-    return href(ctx, same.url, 'm', { v: t.v, i: same.itag || 0, r: 1 });
+    return href(ctx, url, 'm', { v: t.v, i: same.itag || 0, r: 1 });
   } catch (e) {
     console.log(`umbra: could not refresh the media url for ${t.v}: ${String(e && e.message).slice(0, 120)}`);
     return null;
@@ -616,6 +617,10 @@ border-radius:8px;padding:10px 16px;cursor:pointer}button[disabled]{opacity:.5;c
       try { headers.referer = new URL(ctx.referrer || url).origin + '/'; } catch {}
     }
     if (mode === 's') headers.referer = headers.referer || (() => { try { return new URL(url).origin + '/'; } catch { return undefined; } })();
+    /* Without a Piped proxy, a direct googlevideo media URL still needs the
+       YouTube player's Referer/Origin. Referring from googlevideo itself (the
+       generic origin fallback) can turn a valid signed track into a 403. */
+    Object.assign(headers, youtubeMediaHeaders(url, mode));
     if (opts.range) headers.range = opts.range;
     if (upBody) {
       headers['content-type'] = upCt || 'application/x-www-form-urlencoded';
@@ -848,9 +853,17 @@ ${/json/.test(ct) ? '<script>try{var j=JSON.parse(document.querySelector("pre").
   }
   const docCtx = { ...ctx, url: finalUrl };
   let docOut = rewriteHtml(html, { base: baseUrl, ctx: docCtx, mode: 's' });
+  /* Rewrite static URLs against the upstream's physical <base>, but runtime
+     references in an iframe belong to the child, not its framer. An explicit
+     identity can differ from the fetch URL (a nocookie embed fetched through
+     youtube.com). Ordinary mode-d tokens also name their *initial* address;
+     on a redirect or <base> change, follow the final address instead of
+     pinning the shell's address bar to a stale starting URL. */
+  const logicalBase = ctx.logicalUrl && ctx.logicalUrl !== toUmbra(ctx.url)
+    ? ctx.logicalUrl : toUmbra(baseUrl);
   const ctxObj = {
-    url: toUmbra(baseUrl),
-    dir: toUmbra(baseUrl.replace(/[^/]*$/, '')),
+    url: logicalBase,
+    dir: new URL('.', logicalBase).href,
     tab: ctx.tabId,
     frame: 'top',
     key: ctx.key,
@@ -870,10 +883,10 @@ ${/json/.test(ct) ? '<script>try{var j=JSON.parse(document.querySelector("pre").
   send(res, status || 200, {
     'content-type': 'text/html; charset=utf-8',
     'access-control-allow-origin': ctx.origin,
-    'x-umbra-base': toUmbra(baseUrl),
+    'x-umbra-base': logicalBase,
     'cache-control': 'no-store',
     ...metaHeaders({
-      kind: 'doc', url: finalUrl, umbra: toUmbra(baseUrl), status,
+      kind: 'doc', url: finalUrl, umbra: logicalBase, status,
       hops: chain.length, redirected: chain.length > 1, tab: ctx.tabId,
       chain: chain.map((c) => c.status + ' ' + displayHost(c.url)),
     }),
@@ -989,7 +1002,7 @@ Umbra converts it into a redirect event: the wiki opens as a new tab, this page 
 <h1>Run <code>location.href = 'https://example.com'</code></h1>
 <p>The frame is sandboxed without <code>allow-top-navigation</code> and <code>window.open</code> is
 overridden, so a script cannot move your browser tab. If it pushes the <i>frame</i> off the Umbra
-origin, the shell notices on load, reverts it, and re-routes the target into a tab.</p>
+origin, frame-src blocks that hop and the shell follows the target through Umbra in the same tab.</p>
 <div class="row"><button class="go" onclick="location.href='https://example.com/'">location.href = off-origin</button>
 <button onclick="location.replace('https://httpbin.org/get?replaced=1')">location.replace()</button>
 <button onclick="window.location.assign('umbra://en.wikipedia.org/wiki/URL_redirector')">location.assign(umbra)</button></div></body>`,
@@ -1541,7 +1554,8 @@ async function route(req, res) {
     const mode = MODES.has(body.mode) ? body.mode : 'd';
     return json(res, {
       umbra: toUmbra(abs),
-      href: href({ tabId: tabId || 'shell', session: s.id, gen: s.gen, url: abs }, abs, mode),
+      href: href({ tabId: tabId || 'shell', session: s.id, gen: s.gen, url: abs },
+        abs, mode, mode === 'd' ? toUmbra(abs) : null),
     });
   }
 
@@ -1751,6 +1765,12 @@ async function route(req, res) {
         stalePage(ctx, t ? t.u : 'a link from a previous run of this server'));
     }
     const ctx = mkCtx(t.u, head, t.t);
+    /* The HMAC-bound `l` claim is the child document's logical base. It can
+       differ from its upstream URL; never let the parent Tube page supply it
+       by accident to a nested YouTube iframe. */
+    if (typeof t.l === 'string' && /^umbra:\/\//i.test(t.l)) {
+      try { if (new URL(t.l).host) ctx.logicalUrl = t.l; } catch {}
+    }
     const opts = { mode: head };
     if (head === 'f') {
       opts.body = await readReq(req);
@@ -1921,6 +1941,9 @@ async function route(req, res) {
       try { abs = new URL(decodeURIComponent(echo) + (u.search || ''), raw.replace(/[^/]*$/, '')).href; } catch {}
     }
     const ctx = mkCtx(abs, mode, tabId);
+    /* A runtime-created mode-d iframe is also a new document, not another
+       resource within the parent's logical umbra://tube/watch context. */
+    if (mode === 'd') ctx.logicalUrl = toUmbra(abs);
     ctx.referrer = /^https?:/.test(t.url || '') ? t.url : null;
     const popts = { mode, range: req.headers.range || null };
     if (req.method && !/^(GET|HEAD)$/i.test(req.method)) {

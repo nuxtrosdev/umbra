@@ -241,6 +241,9 @@ export function streamInfo(s = {}, { provider, instance } = {}) {
     title: str(s.title, 500),
     duration: duration(s.duration),
     live: s.live === true,
+    /* The extractor's signed Googlevideo URLs can be bound to its IP. Keep
+       the Piped proxy origin through normalization for the media wire. */
+    proxyUrl: url(s.proxyUrl) || null,
     videoStreams: keep(s.videoStreams),
     audioStreams: keep(s.audioStreams),
     subtitles: (Array.isArray(s.subtitles) ? s.subtitles : []).map((c) => {

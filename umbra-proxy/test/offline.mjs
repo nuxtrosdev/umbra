@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import http from 'node:http';
 import vm from 'node:vm';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +27,10 @@ const MOCK = `http://127.0.0.1:${MOCK_PORT}`;
 const MOCK_ALT = `http://localhost:${MOCK_PORT}`;
 const PFX = '/~umbra/';
 const VID = 'dQw4w9WgXcQ';
+/* Unit-created signed child-document tokens must be accepted by the spawned
+   origin to test logical-base restoration over HTTP. Share a fresh secret
+   within this one offline run, never with a deployment or another test. */
+process.env.UMBRA_SECRET = crypto.randomBytes(32).toString('hex');
 
 let cookie = '';
 const results = [];
@@ -444,6 +449,55 @@ async function unit() {
     ok('a declared host that is not a youtube image host is ignored',
       PP.unproxyImage('https://proxy.example/vi/x/hq.jpg?host=evil.example') === 'https://i.ytimg.com/vi/x/hq.jpg',
       PP.unproxyImage('https://proxy.example/vi/x/hq.jpg?host=evil.example'));
+  }
+
+  /* ---- extractor-bound Piped media + canonical thumbnails ---- */
+  {
+    const PP = await import('../server/piped.mjs');
+    const T = await import('../server/providers/types.mjs');
+    const TV = await import('../server/tube-view.mjs');
+    const ctx = { tabId: 'Tproxy', session: 'Sproxy', gen: 'Gproxy' };
+    const origin = 'https://proxy.piped.private.coffee';
+    const source = 'https://rr1---sn-test.googlevideo.com/videoplayback?expire=9999999999&itag=18&sig=abc%2B';
+    const expected = origin + '/videoplayback?expire=9999999999&itag=18&sig=abc%2B&host=rr1---sn-test.googlevideo.com';
+    const thumb = origin + '/vi/' + VID + '/hq720.jpg?host=i.ytimg.com';
+    const canonical = 'https://i.ytimg.com/vi/' + VID + '/hqdefault.jpg';
+    const claims = (url) => P.decodeToken(url.split('/')[3]);
+    const input = { id: VID, title: 'Piped', proxyUrl: origin, thumbnailUrl: thumb,
+      videoStreams: [{ url: source, itag: 18, mimeType: 'video/mp4', videoOnly: false }],
+      audioStreams: [{ url: source.replace('itag=18', 'itag=140'), itag: 140, mimeType: 'audio/mp4' }] };
+    const raw = PP.toPlayerPayload(input, ctx, VID, 'piped');
+    ok('Piped /videoplayback keeps the signed query and original CDN host',
+      PP.mediaThroughProxy(source, origin) === expected, PP.mediaThroughProxy(source, origin));
+    ok('raw Piped video and audio use its proxy on Umbra’s media wire',
+      raw.muxed[0].url === expected && claims(raw.muxed[0].wire)?.u === expected &&
+      raw.audio[0].url.startsWith(origin + '/videoplayback?') &&
+      claims(raw.audio[0].wire)?.u === raw.audio[0].url && raw.muxed[0].direct === source,
+      JSON.stringify({ wire: claims(raw.muxed[0].wire)?.u, direct: raw.muxed[0].direct }));
+    ok('unrelated media URLs and bad proxy bases are not rewritten',
+      PP.mediaThroughProxy('https://cdn.example/video.mp4', origin) === null &&
+      PP.mediaThroughProxy(source, 'javascript:alert(1)') === null &&
+      PP.toPlayerPayload({ proxyUrl: origin, videoStreams: [{ url: 'https://cdn.example/video.mp4' }] },
+        ctx, VID, 'cdn').muxed[0].url === 'https://cdn.example/video.mp4');
+    ok('dead Piped proxy thumbnails use a canonical YouTube fallback on the image wire',
+      raw.thumb === canonical && claims(raw.thumbWire)?.u === canonical &&
+      PP.canonicalThumb('', VID) === canonical &&
+      PP.canonicalThumb('https://pipedproxy.kavin.rocks/vi/' + VID + '/hq720.jpg', VID) === canonical &&
+      PP.canonicalThumb('https://i.ytimg.com/vi/' + VID + '/mqdefault.jpg', VID) ===
+        'https://i.ytimg.com/vi/' + VID + '/mqdefault.jpg');
+
+    /* Tube uses the normalized provider model, not the raw /streams JSON.
+       A lost proxyUrl here would silently bring the 403 back on real pages. */
+    const normalized = T.streamInfo(input, { provider: 'piped', instance: 'https://api.piped.private.coffee' });
+    const watch = TV.toWatchPayload({ streams: { data: normalized, provider: 'piped' },
+      video: { data: { id: VID, thumbnails: [{ url: thumb }], author: {} }, provider: 'piped' } }, ctx, VID);
+    const card = TV.toCard({ id: VID, thumbnails: [{ url: thumb }], author: {} }, ctx);
+    ok('normalization preserves proxyUrl and the Tube watch payload uses it',
+      normalized.proxyUrl === origin && watch.muxed[0].url === expected &&
+      claims(watch.muxed[0].wire)?.u === expected, normalized.proxyUrl);
+    ok('Tube watch and cards both wire the canonical fallback thumbnail',
+      watch.thumb === canonical && claims(watch.thumbWire)?.u === canonical &&
+      claims(card.thumbWire)?.u === canonical);
   }
 
   /* ---- the watch page as a second extraction surface ---- */
@@ -920,6 +974,114 @@ async function unit() {
 
   const ctx = { tabId: 'T1', session: 'S1', gen: 'G1', origin: BASE };
   const rw = (html, base = MOCK + '/') => H.rewriteHtml(html, { base, ctx, mode: 's' });
+  const signed = (wire) => P.decodeToken(wire.split('/')[3]);
+  const logicalEmbed = 'umbra://www.youtube-nocookie.com/embed/' + VID;
+  const explicit = P.href(ctx, 'https://www.youtube.com/embed/' + VID, 'd', logicalEmbed);
+  ok('a document token signs the child base separately from its upstream URL',
+    signed(explicit)?.u === 'https://www.youtube.com/embed/' + VID &&
+    signed(explicit)?.l === logicalEmbed && signed(explicit)?.m === 'd');
+  const mediaClaims = signed(P.href(ctx, 'https://cdn.example/track', 'm', { v: VID, i: 18, r: 1 }));
+  ok('the new logical claim does not replace existing media refresh claims',
+    mediaClaims?.v === VID && mediaClaims.i === 18 && mediaClaims.r === 1 && !mediaClaims.l);
+
+  const childRefs = rw('<iframe src="/frame?child=1"></iframe><frame src="/page2"></frame>' +
+    '<a href="/next">next</a><img src="/photo.jpg">');
+  const childTokens = [...childRefs.matchAll(/\/~umbra\/d\/([^/"\s]+)/g)].map((m) => P.decodeToken(m[1]));
+  ok('static iframe, frame, and navigation references each sign their own logical base',
+    childTokens.length === 3 &&
+    childTokens.every((t) => t && t.l === P.toUmbra(t.u) && t.l.startsWith('umbra://127.0.0.1:')),
+    JSON.stringify(childTokens.map((t) => t && { u: t.u, l: t.l })));
+  const forms = rw('<form action="umbra://search/" method="get"><input name="q">' +
+    '<button formaction="umbra://tube/search?kind=a&amp;b">tube</button></form>' +
+    '<form action="https://example.com/post" method="post"></form>');
+  ok('Umbra-native form and submitter actions have safe native targets plus logical twins',
+    /<form action="#" data-umbra-action="umbra:\/\/search\/"/.test(forms) &&
+    /<button formaction="#" data-umbra-action="umbra:\/\/tube\/search\?kind=a&amp;b"/.test(forms) &&
+    !/\s(?:action|formaction)="umbra:\/\//.test(forms), forms.slice(0, 170));
+  ok('normal HTTP form actions still use signed mode-f wire URLs',
+    /<form action="\/~umbra\/f\//.test(forms));
+  const upperForm = rw('<form action="UMBRA://search/"></form>');
+  ok('Umbra scheme matching is case-insensitive in static form actions',
+    /action="#" data-umbra-action="UMBRA:\/\/search\/"/.test(upperForm));
+
+  /* Drive the shipping submit listener, not just the HTML rewriter: a "#"
+     action must navigate to its logical twin, and a button override must win. */
+  {
+    const src = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+    const listeners = {}, messages = [];
+    function Element(tag) { this.tagName = tag; this.attrs = {}; }
+    Element.prototype = {
+      setAttribute(n, v) { this.attrs[n] = String(v); },
+      getAttribute(n) { return this.attrs[n] ?? null; },
+      removeAttribute(n) { delete this.attrs[n]; },
+      hasAttribute(n) { return this.getAttribute(n) !== null; },
+    };
+    const g = {
+      TextEncoder, btoa, URL, URLSearchParams, console, Element,
+      document: {
+        readyState: 'complete', title: '', documentElement: {},
+        getElementById: (id) => id === 'umbra-ctx' ? { textContent: JSON.stringify({
+          url: 'umbra://search/', dir: 'umbra://search/', tab: 'T1', frame: 'top',
+          key: 'K', session: 'S', origin: 'https://proxy.example', ephemeral: 1,
+        }) } : null,
+        addEventListener: (name, fn) => { listeners[name] = fn; },
+        querySelector: () => null, querySelectorAll: () => [],
+        createElement: () => ({ setAttribute() {} }),
+      },
+      FormData: class { forEach(cb) { cb('space & video', 'q'); } },
+      postMessage: (msg) => messages.push(msg), __UMBRA_SHELL__: true,
+      addEventListener() {}, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {},
+    };
+    for (const name of ['HTMLAnchorElement', 'HTMLAreaElement', 'HTMLIFrameElement', 'HTMLFrameElement',
+      'HTMLImageElement', 'HTMLScriptElement', 'HTMLLinkElement', 'HTMLMediaElement',
+      'HTMLInputElement', 'HTMLObjectElement', 'HTMLQuoteElement', 'HTMLSourceElement',
+      'HTMLTrackElement', 'HTMLEmbedElement', 'HTMLVideoElement', 'HTMLAudioElement',
+      'HTMLButtonElement']) g[name] = function () {};
+    g.HTMLFormElement = function () { Element.call(this, 'FORM'); };
+    g.HTMLFormElement.prototype = Object.create(Element.prototype);
+    Object.defineProperty(g.HTMLFormElement.prototype, 'action', {
+      configurable: true, get() { return this.attrs.action; },
+      set(v) { this.attrs.action = String(v); },
+    });
+    g.window = g; g.top = g; g.parent = g; g.self = g;
+    vm.createContext(g);
+    vm.runInContext(src, g);
+    const form = new g.HTMLFormElement();
+    form.setAttribute('action', 'umbra://search/');
+    ok('runtime form actions are safe before the submit event fires',
+      g.__UMBRA_DIAG__.done.includes('refs') && g.__UMBRA_DIAG__.done.includes('forms') &&
+      form.getAttribute('action') === '#' && form.getAttribute('data-umbra-action') === 'umbra://search/');
+    form.action = 'umbra://search/';
+    ok('assigning form.action uses the safe target too',
+      form.action === '#' && form.getAttribute('data-umbra-action') === 'umbra://search/');
+    form.action = 'UMBRA://search/';
+    ok('a mixed-case runtime form action stays safe and retains its destination',
+      form.action === '#' && form.getAttribute('data-umbra-action') === 'UMBRA://search/');
+    form.action = 'umbra://search/';
+    const button = new Element('BUTTON');
+    button.setAttribute('formaction', 'umbra://tube/search');
+    let prevented = false;
+    listeners.submit({ target: form, submitter: button, preventDefault() { prevented = true; } });
+    ok('a rewritten button override routes to its own logical destination',
+      prevented && button.getAttribute('formaction') === '#' &&
+      messages.at(-1)?.url === 'umbra://tube/search?q=space+%26+video', messages.at(-1)?.url);
+    listeners.submit({ target: form, submitter: null, preventDefault() {} });
+    ok('an ordinary safe form target still routes through the shell',
+      messages.at(-1)?.url === 'umbra://search/?q=space+%26+video', messages.at(-1)?.url);
+    form.action = 'UMBRA://search/';
+    listeners.submit({ target: form, submitter: null, preventDefault() {} });
+    ok('a mixed-case logical destination still submits rather than following #',
+      messages.at(-1)?.url === 'umbra://search/?q=space+%26+video', messages.at(-1)?.url);
+    form.action = 'https://example.com/get';
+    ok('changing a form to HTTP removes its stale Umbra-native destination',
+      form.getAttribute('data-umbra-action') === null && /\/~umbra\/p\/f\//.test(form.action));
+    ok('document.write form markup gets a safe Umbra action before parsing',
+      /action="#" data-umbra-action="umbra:\/\/search\/"/.test(g.__umbraMarkup('<form action="umbra://search/"></form>')));
+    const srcdocForm = g.__umbraMarkup('<iframe srcdoc="&lt;form action=&quot;umbra://search/&quot;&gt;&lt;/form&gt;"></iframe>');
+    ok('srcdoc with only an Umbra form action is also safe before parsing',
+      /action=&quot;#&quot; data-umbra-action=&quot;umbra:\/\/search\/&quot;/.test(srcdocForm), srcdocForm);
+  }
+
   const out = rw('<a href="/p2">a</a><a href="javascript:x">b</a><a href="mailto:a@b">c</a>' +
     '<img src="/i.png" srcset="/a.png 1x, /b.png 2x"><form action="/f" method="post"></form>' +
     '<base href="http://evil.example/"><meta http-equiv="refresh" content="2;url=/later">' +
@@ -991,6 +1153,38 @@ async function wire() {
   const doc = await call((await mint(MOCK + '/', 'd', tn.tab)).href);
   ok('mode d serves a rewritten document', doc.status === 200 && /Mock Origin/.test(doc.text) && /umbra-ctx/.test(doc.text), doc.meta?.kind);
   ok('shim + logical context injected', /shim\.js/.test(doc.text) && /"url":"umbra:\/\//.test(doc.text));
+  const P = await import('../server/protocol.mjs');
+  const claims = (wire) => JSON.parse(Buffer.from(wire.split('/')[3].split('.')[0], 'base64url').toString('utf8'));
+  const docCtx = (html) => JSON.parse((/<script id="umbra-ctx" type="application\/json">([\s\S]*?)<\/script>/.exec(html) || [])[1]);
+  const seed = await mint(MOCK + '/frame', 'd', tn.tab);
+  const seedClaims = claims(seed.href);
+  ok('API-minted mode-d navigation signs the destination’s own logical base',
+    seedClaims.l === P.toUmbra(MOCK + '/frame') && seedClaims.t === tn.tab,
+    JSON.stringify({ u: seedClaims.u, l: seedClaims.l }));
+  const staticFrame = (/<iframe src="([^"]+)/.exec(doc.text) || [])[1];
+  const staticChild = staticFrame ? await call(staticFrame) : { status: 0, text: '' };
+  ok('a static iframe loads with its own logical address, not its parent’s',
+    staticChild.status === 200 && claims(staticFrame).l === P.toUmbra(MOCK + '/frame') &&
+    docCtx(staticChild.text).url === P.toUmbra(MOCK + '/frame'));
+
+  /* The upstream host and logical host deliberately disagree here. A token
+     signed by this test process is valid for the spawned origin because this
+     offline run shares one ephemeral secret (above). This proves the server
+     really restores `l`, rather than merely deriving it from the upstream. */
+  const logicalEmbed = 'umbra://www.youtube-nocookie.com/embed/' + VID;
+  const childWire = P.href({ tabId: tn.tab, session: bootJ.session, gen: seedClaims.g },
+    MOCK + '/frame', 'd', logicalEmbed);
+  const childDoc = await call(childWire);
+  ok('signed child logical base survives document serving and appears in headers',
+    childDoc.status === 200 && docCtx(childDoc.text).url === logicalEmbed &&
+    docCtx(childDoc.text).dir === 'umbra://www.youtube-nocookie.com/embed/' &&
+    childDoc.headers.get('x-umbra-base') === logicalEmbed && childDoc.meta?.umbra === logicalEmbed,
+    JSON.stringify({ status: childDoc.status, base: childDoc.headers.get('x-umbra-base') }));
+  const runtime = `${PFX}p/d/${Buffer.from(MOCK + '/frame').toString('base64url')}?k=${tn.key}&t=${tn.tab}&sid=${bootJ.session}`;
+  const runtimeChild = await callBare(runtime);
+  ok('a runtime-created mode-d iframe gets the child’s logical base',
+    runtimeChild.status === 200 && docCtx(runtimeChild.text).url === P.toUmbra(MOCK + '/frame'),
+    'http ' + runtimeChild.status);
   /* Behind a TLS-terminating proxy the socket is plain http and the scheme
      only exists in a header — which chained proxies append to rather than
      replace. Reading the whole list made the origin "https, http://host",
@@ -1024,6 +1218,11 @@ async function wire() {
   const def = await call((await mint(`${MOCK}/redirect-to?url=${encodeURIComponent(MOCK_ALT + '/other')}&status_code=302`, 'd', tn.tab)).href);
   ok('default policy follows a cross-host 3xx into one document', def.status === 200 && /other host doc/.test(def.text) && def.meta?.redirected === true && def.meta?.hops === 2,
     'http ' + def.status + ' hops=' + def.meta?.hops);
+  ok('an ordinary document’s logical base follows redirects rather than freezing at its token URL',
+    def.meta?.umbra === P.toUmbra(MOCK_ALT + '/other') &&
+    docCtx(def.text).url === P.toUmbra(MOCK_ALT + '/other') &&
+    def.headers.get('x-umbra-base') === P.toUmbra(MOCK_ALT + '/other'),
+    JSON.stringify({ base: def.headers.get('x-umbra-base'), meta: def.meta?.umbra }));
   await call('/~umbra/policy', J({ follow: 'same-host' }));
   const held = await call((await mint(`${MOCK}/redirect-to?url=${encodeURIComponent(MOCK_ALT + '/other')}&status_code=302`, 'd', tn.tab)).href);
   ok('strict policy holds a cross-host 3xx as an in-tab capsule', held.status === 200 && /redirect held/i.test(held.text) && held.meta?.kind === 'redirect-held',
@@ -1131,6 +1330,10 @@ async function wire() {
   ok('muxed + adaptive tracks each get a mode-m wire url',
     ytj.muxed?.length === 1 && ytj.video?.length === 1 && ytj.audio?.length === 1 &&
     [ytj.muxed[0], ytj.video[0], ytj.audio[0]].every((f) => f.wire?.startsWith('/~umbra/m/')));
+  ok('the inspected YouTube embed signs its own logical document base',
+    claims(ytj.embedDoc).l === P.toUmbra(MOCK + '/embed/' + VID) &&
+    claims(ytj.embedDoc).u.startsWith(MOCK + '/embed/' + VID),
+    JSON.stringify({ u: claims(ytj.embedDoc).u, l: claims(ytj.embedDoc).l }));
   const stream = await call(ytj.muxed[0].wire, { headers: { range: 'bytes=0-99' } });
   ok('muxed wire url streams with Range', stream.status === 206 && stream.bytes.length === 100, stream.status + '/' + stream.bytes.length);
   ok('thumbnails routed through the proxy', ytj.thumbWire?.startsWith('/~umbra/s/') && (await call(ytj.thumbWire)).status === 200);
@@ -1364,6 +1567,11 @@ async function wire() {
     'http ' + tubeHome.status);
   ok('tube names the provider that served the page, not a raw instance host',
     /via innertube/.test(tubeHome.text), (/<span class="chip">via ([^<]*)/.exec(tubeHome.text) || [])[1]);
+  const portal = await call((await mint('umbra://home/', 'd', tn.tab)).href);
+  ok('portal and Tube search forms have safe native actions on the served page',
+    /<form[^>]*action="#" data-umbra-action="umbra:\/\/search\/"/.test(portal.text) &&
+    /<form[^>]*action="#" data-umbra-action="umbra:\/\/tube\/search"/.test(tubeHome.text) &&
+    !/\saction="umbra:\/\//.test(portal.text + tubeHome.text));
   ok('tube thumbnails are wire urls, never the instance directly',
     /src="\/~umbra\/s\//.test(tubeHome.text) && !/src="http:\/\/127\.0\.0\.1/.test(tubeHome.text));
 
@@ -1388,6 +1596,30 @@ async function wire() {
     Array.isArray(tubeInfo.muxed) && tubeInfo.muxed[0].wire.startsWith('/~umbra/m/') &&
     Array.isArray(tubeInfo.captions) && typeof tubeInfo.captions[0].vtt === 'string',
     'muxed=' + tubeInfo.muxed.length + ' caps=' + tubeInfo.captions.length);
+  ok('tube embed token carries a child logical base, not umbra://tube/watch',
+    claims(tubeInfo.embedDoc).l === P.toUmbra(MOCK + '/embed/' + VID) &&
+    claims(tubeInfo.embedDoc).u === MOCK + '/embed/' + VID,
+    JSON.stringify({ u: claims(tubeInfo.embedDoc).u, l: claims(tubeInfo.embedDoc).l }));
+
+  /* Force both local extractors to return no formats, so the real Tube route
+     must use the mocked PUBLIC Piped instance. Its raw CDN URL is unreachable;
+     only /videoplayback on the mock proxy can answer a Range request. */
+  const proxyWatch = await call((await mint('umbra://tube/watch?v=PipedProxy1', 'd', tn.tab)).href);
+  const proxyInfo = JSON.parse((/data-info='([^']+)'/.exec(proxyWatch.text) || [])[1].replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+  const proxiedTrack = proxyInfo.muxed?.[0];
+  ok('Tube signs the Piped proxy URL rather than direct googlevideo in the browser’s media wire',
+    proxyInfo.ok && proxyInfo.instance.includes('piped') &&
+    proxiedTrack?.url.startsWith(MOCK + '/videoplayback?') &&
+    claims(proxiedTrack.wire).u === proxiedTrack.url &&
+    proxiedTrack.direct.startsWith('https://rr1---sn-test.googlevideo.com/'),
+    JSON.stringify({ source: proxyInfo.instance, wire: proxiedTrack && claims(proxiedTrack.wire).u }));
+  const proxiedBytes = await call(proxiedTrack.wire, { headers: { range: 'bytes=0-63' } });
+  const proxyHits = (await (await fetch(`${MOCK}/__hits`)).json()).filter((h) => h.path === '/videoplayback');
+  ok('a browser-style Range request reaches Piped’s media proxy, not googlevideo',
+    proxiedBytes.status === 206 && proxiedBytes.bytes.length === 64 &&
+    proxyHits.at(-1)?.host === 'rr1---sn-test.googlevideo.com' && proxyHits.at(-1)?.range === 'bytes=0-63',
+    `http ${proxiedBytes.status} · ${proxyHits.length} Piped requests`);
+
   const tubeStream = await call(tubeInfo.muxed[0].wire, { headers: { range: 'bytes=0-99' } });
   ok('tube stream bytes flow through the umbra media wire with Range',
     tubeStream.status === 206 && tubeStream.bytes.length === 100, tubeStream.status + '/' + tubeStream.bytes.length);
@@ -1490,6 +1722,13 @@ async function wire() {
       IX.mediaSrcFor(IX.modeFrom('nonsense')) === "media-src 'self' blob: data:" &&
       IX.modeFrom('PEER') === 'peer' && IX.modeFrom(undefined) === 'wire',
       IX.mediaSrcFor('peer') + ' / ' + IX.mediaSrcFor('direct'));
+    const directHeaders = IX.youtubeMediaHeaders('https://rr1---sn-x.googlevideo.com/videoplayback?itag=18', 'm');
+    ok('direct Googlevideo media uses YouTube’s player Referer and Origin',
+      directHeaders.referer === 'https://www.youtube.com/' &&
+      directHeaders.origin === 'https://www.youtube.com' &&
+      directHeaders['sec-fetch-site'] === 'cross-site' &&
+      !Object.keys(IX.youtubeMediaHeaders('https://proxy.piped.example/videoplayback?host=rr1---sn-x.googlevideo.com', 'm')).length &&
+      !Object.keys(IX.youtubeMediaHeaders('https://rr1---sn-x.googlevideo.com/videoplayback', 's')).length);
   }
 
   /* The rewrite that makes a peer url: Piped's media proxy takes the same
@@ -1727,6 +1966,10 @@ async function wire() {
       /* inside the slack window: treat as already gone */
       IX.expiredMediaUrl(`https://rr1---sn-x.googlevideo.com/videoplayback?expire=${soon}`) === true,
       'expiry classification');
+    ok('a Piped proxy URL keeps its Google signature expiry for media refresh',
+      IX.expiredMediaUrl('https://proxy.piped.example/videoplayback?expire=1000000&host=rr1---sn-x.googlevideo.com') === true &&
+      IX.expiredMediaUrl(`https://proxy.piped.example/videoplayback?expire=${later}&host=rr1---sn-x.googlevideo.com`) === false &&
+      IX.expiredMediaUrl('https://proxy.piped.example/image?expire=1000000&host=rr1---sn-x.googlevideo.com') === false);
     ok('and nothing else is second-guessed: other hosts and unsigned urls pass through',
       IX.expiredMediaUrl('https://example.com/a.mp4?expire=1000000') === false &&
       IX.expiredMediaUrl('https://rr1---sn-x.googlevideo.com/videoplayback?itag=18') === false &&
