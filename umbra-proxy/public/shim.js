@@ -1208,7 +1208,7 @@
         } catch (e) { return u; }
       }
       function report(kind, message, source, line, col) {
-        if (sent++ > 40) return;
+        if (sent++ > 90) return;
         try {
           fetch(PFX + 'clienterr', {
             method: 'POST',
@@ -1235,12 +1235,57 @@
         report('nav', 'document hidden (navigated or replaced)', LOGICAL, 0, 0);
       });
 
+      /* "failed to load" is the browser declining to tell us why, and five
+         different causes wear that one sentence: a bad status, a cors
+         refusal, a mime refusal, an integrity mismatch, an abort. The
+         element and the performance entry together distinguish them, and
+         a plain refetch of the same url settles what actually came back —
+         if that succeeds while the element failed, the bytes were never
+         the problem and the element's own attributes were. */
+      function postMortem(el, url) {
+        var bits = [];
+        try {
+          ['crossorigin', 'integrity', 'type', 'nonce', 'referrerpolicy', 'rel', 'as'].forEach(function (a) {
+            var v = el.getAttribute && el.getAttribute(a);
+            if (v !== null && v !== undefined) bits.push(a + '=' + (a === 'nonce' ? '(set)' : (v || '(empty)')));
+          });
+        } catch (e) {}
+        try {
+          var ents = performance.getEntriesByName(el.src || el.href || url) || [];
+          var pe = ents[ents.length - 1];
+          if (pe) {
+            bits.push('transferred=' + Math.round(pe.transferSize || 0) + 'b');
+            bits.push('decoded=' + Math.round(pe.decodedBodySize || 0) + 'b');
+            if (pe.responseStatus !== undefined) bits.push('status=' + pe.responseStatus);
+            if (pe.deliveryType) bits.push('delivery=' + pe.deliveryType);
+          } else { bits.push('no timing entry (never hit the network)'); }
+        } catch (e) {}
+        report('error', el.tagName.toLowerCase() + ' failed to load [readyState='
+          + document.readyState + '] ' + bits.join(' '), logical(el.src || el.href || url), 0, 0);
+
+        /* and now ask for the very same bytes, plainly */
+        try {
+          fetch(el.src || el.href || url, { cache: 'reload', credentials: 'same-origin' })
+            .then(function (r) {
+              return r.text().then(function (t) {
+                report('error', 'refetch of the same url: ' + r.status + ' '
+                  + (r.headers.get('content-type') || '?') + ' ' + t.length + 'b'
+                  + ' — so the response was fine and the element rejected it',
+                  logical(el.src || el.href || url), 0, 0);
+              });
+            })
+            .catch(function (err) {
+              report('error', 'refetch of the same url also failed: ' + (err && err.message),
+                logical(el.src || el.href || url), 0, 0);
+            });
+        } catch (e) {}
+      }
+
       addEventListener('error', function (e) {
         if (!current()) return;
         if (e && e.target && e.target !== window && e.target.tagName) {
           /* a subresource that failed to load, not a thrown exception */
-          return report('error', e.target.tagName.toLowerCase() + ' failed to load [readyState=' + document.readyState + ']',
-            logical(e.target.src || e.target.href || ''), 0, 0);
+          return postMortem(e.target, e.target.src || e.target.href || '');
         }
         report('error', (e && e.message) || 'unknown error', logical(e && e.filename), e && e.lineno, e && e.colno);
       }, true);

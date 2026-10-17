@@ -1078,6 +1078,11 @@ async function unit() {
     TR.clientLine({ kind: 'rejection', message: 'boom', source: 'https://x.test/b.js', line: 12, col: 3 }));
   ok('tracing is off unless asked for', TR.TRACE === false);
   const shim = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+  ok('a failed subresource is examined rather than just named',
+    /function postMortem\(/.test(shim) && /getEntriesByName/.test(shim) &&
+    /crossorigin/.test(shim) && /responseStatus/.test(shim));
+  ok('and the same url is refetched plainly, to separate bytes from attributes',
+    /refetch of the same url/.test(shim) && /cache: 'reload'/.test(shim));
   ok('the page announces its own departure so aborts can be told from faults',
     /beforeunload/.test(shim) && /requests still in flight will abort/.test(shim));
   ok('and a failed subresource records whether the document was still loading',
