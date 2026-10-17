@@ -969,6 +969,51 @@ async function unit() {
     Y.parseVideoId('https://www.youtube.com/playlist?list=abc') === null);
 }
 
+/* ---- runtime SRI: the half html rewriting cannot reach ---- */
+{
+  const shim = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+  ok('setAttribute refuses integrity on scripts and links',
+    /n === 'integrity' && sriIrrelevant\(this\)/.test(shim));
+  ok('and the idl property is neutralised too, for loaders that assign it',
+    /Object\.defineProperty\(C\.prototype, 'integrity'/.test(shim));
+  ok('nodes that arrive already carrying one are cleaned on insertion',
+    /removeAttribute\('integrity'\)/.test(shim));
+
+  const haveJsdom = await import('jsdom').then(() => true, () => false);
+  if (haveJsdom) {
+    const { JSDOM } = await import('jsdom');
+    const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>',
+      { runScripts: 'outside-only' });
+    const w = dom.window;
+    /* the two lines the shim installs, applied to this window */
+    w.eval(`
+      var nativeSetAttribute = Element.prototype.setAttribute;
+      function sriIrrelevant(el) { try { return /^(SCRIPT|LINK|STYLE)$/.test(el.tagName); } catch (e) { return false; } }
+      [window.HTMLScriptElement, window.HTMLLinkElement].forEach(function (C) {
+        Object.defineProperty(C.prototype, 'integrity', { configurable: true, get: function () { return ''; }, set: function () {} });
+      });
+      Element.prototype.setAttribute = function (name, value) {
+        var n = String(name).toLowerCase();
+        if (n === 'integrity' && sriIrrelevant(this)) return;
+        return nativeSetAttribute.call(this, name, value);
+      };
+    `);
+    const s1 = w.document.createElement('script');
+    s1.setAttribute('integrity', 'sha384-nope');
+    ok('a loader setting integrity by attribute gets nowhere',
+      !s1.hasAttribute('integrity'), s1.outerHTML);
+    s1.integrity = 'sha384-nope';
+    ok('and setting it by property gets nowhere either',
+      !s1.getAttribute('integrity') && s1.integrity === '', String(s1.integrity));
+    const d1 = w.document.createElement('div');
+    d1.setAttribute('integrity', 'kept');
+    ok('unrelated elements keep attributes of that name', d1.getAttribute('integrity') === 'kept');
+    const s2 = w.document.createElement('script');
+    s2.setAttribute('src', '/a.js');
+    ok('everything else still goes through untouched', s2.getAttribute('src') === '/a.js');
+  }
+}
+
 /* ---- a refusal we generate ourselves has to show up in the trace ---- */
 {
   const TR = await import('../server/trace.mjs');

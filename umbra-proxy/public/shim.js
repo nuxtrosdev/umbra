@@ -200,8 +200,36 @@
     }
     patch(HTMLQuoteElement.prototype, 'cite');
 
+    /* Subresource integrity, the runtime half.
+    
+       The server strips `integrity` from markup it rewrites, but YouTube's
+       bootstrap does not use markup: its loader builds script and link
+       elements in javascript and sets the hash through the DOM, where no
+       amount of html rewriting can reach it. The hash covers the bytes the
+       origin shipped; we serve those bytes with their urls pointed at the
+       wire, so it cannot match, and a mismatch makes the browser discard a
+       response it already fetched successfully. That is the whole distance
+       between a working page and a skeleton: ten files arriving with 200
+       and being thrown away on the doorstep.
+    
+       So integrity is refused here too, by attribute and by property. */
+    function sriIrrelevant(el) {
+      try { return /^(SCRIPT|LINK|STYLE)$/.test(el.tagName); } catch (e) { return false; }
+    }
+    [window.HTMLScriptElement, window.HTMLLinkElement].forEach(function (C) {
+      if (!C || !C.prototype) return;
+      try {
+        Object.defineProperty(C.prototype, 'integrity', {
+          configurable: true,
+          get: function () { return ''; },
+          set: function () { /* a hash over rewritten bytes can only fail */ },
+        });
+      } catch (e) { /* a locked-down prototype is not worth dying over */ }
+    });
+
     Element.prototype.setAttribute = function (name, value) {
       var n = String(name).toLowerCase();
+      if (n === 'integrity' && sriIrrelevant(this)) return;
       if (n !== 'data-umbra-direct' && isDirect(this)) return nativeSetAttribute.call(this, name, value);
       if (n === 'data-umbra' || n === 'srcset' || n === 'data-srcset') {
         if (n !== 'data-umbra') {
@@ -612,6 +640,11 @@
           if (n.tagName === 'FORM') {
             var a = n.getAttribute('action');
             if (a && !onWire(a) && a.indexOf('umbra://') !== 0) n.setAttribute('action', wire(a, 'f'));
+          }
+          if (n.tagName === 'SCRIPT' || n.tagName === 'LINK') {
+            /* cloned, parsed from markup, or adopted from another document:
+               any route that bypasses setAttribute still arrives here */
+            if (n.hasAttribute && n.hasAttribute('integrity')) n.removeAttribute('integrity');
           }
           if (n.tagName === 'SCRIPT') {
             var sc = n.getAttribute('src');
