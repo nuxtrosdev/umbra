@@ -1061,6 +1061,12 @@ async function unit() {
     !/token/.test(TR.redact('https://x.test/a#access_token=zzz')));
   ok('a long url is shortened but keeps its tail',
     TR.redact('https://x.test/' + 'a'.repeat(400) + '/end.js').length <= 141);
+  ok('every line is stamped, because ordering is the whole point',
+    /umbra·wire +\d+\.\d\ds/.test(TR.wireLine({ mode: 's', status: 200, url: 'https://x.test/a' })) &&
+    /umbra·page +\d+\.\d\ds/.test(TR.clientLine({ message: 'x' })),
+    TR.wireLine({ mode: 's', status: 200, url: 'https://x.test/a' }));
+  ok('a navigation is reported as such, not as another failure',
+    /nav: document is navigating away/.test(TR.clientLine({ kind: 'nav', message: 'document is navigating away' })));
   ok('a failing exchange is marked so it can be found by eye',
     TR.wireLine({ mode: 'x', status: 403, url: 'https://x.test/a' }).includes('!x'),
     TR.wireLine({ mode: 'x', status: 403, url: 'https://x.test/a' }));
@@ -1072,6 +1078,10 @@ async function unit() {
     TR.clientLine({ kind: 'rejection', message: 'boom', source: 'https://x.test/b.js', line: 12, col: 3 }));
   ok('tracing is off unless asked for', TR.TRACE === false);
   const shim = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+  ok('the page announces its own departure so aborts can be told from faults',
+    /beforeunload/.test(shim) && /requests still in flight will abort/.test(shim));
+  ok('and a failed subresource records whether the document was still loading',
+    /readyState=/.test(shim));
   ok('the page only reports its errors when tracing is on',
     /if \(ctx\.trace\)/.test(shim) && /clienterr/.test(shim));
   ok('and a reporting failure can never break the page',

@@ -47,6 +47,18 @@ export function redact(url, { max = 140 } = {}) {
 
 const pad = (s, n) => (String(s) + ' '.repeat(n)).slice(0, n);
 
+/* Ordering is the whole value of a log like this. "Ten scripts failed" and
+   "the page navigated away" are the same two facts in either order, but one
+   order means the proxy broke the scripts and the other means the page
+   cancelled them on its way out. Without a clock you cannot tell, and the
+   lines do not even arrive in order: an upstream exchange is logged when it
+   completes, so a slow fetch prints after a fast one that started later. */
+const T0 = Date.now();
+export const stamp = () => {
+  const ms = Date.now() - T0;
+  return pad((ms / 1000).toFixed(2) + 's', 7);
+};
+
 /** One upstream exchange. */
 export function wireLine({ mode = '?', method = 'GET', url = '', status = 0, type = '', bytes = -1, ms = -1 } = {}) {
   const flag = status >= 400 || status === 0 ? '!' : ' ';
@@ -60,7 +72,7 @@ export function wireLine({ mode = '?', method = 'GET', url = '', status = 0, typ
     ms >= 0 ? pad(ms + 'ms', 6) : pad('', 6),
     redact(url),
   ];
-  return 'umbra·wire ' + bits.join(' ');
+  return 'umbra·wire ' + stamp() + ' ' + bits.join(' ');
 }
 
 /** One response this origin produced itself, upstream or not.
@@ -72,14 +84,14 @@ export function wireLine({ mode = '?', method = 'GET', url = '', status = 0, typ
  * worked. Anything we answer with 4xx/5xx is now reported, carrying the
  * logical url the token resolves to rather than the token. */
 export function serveLine({ mode = '?', method = 'GET', status = 0, url = '', why = '' } = {}) {
-  return 'umbra·serve !' + pad(mode, 1) + ' ' + pad(method, 4) + ' ' + String(status)
+  return 'umbra·serve ' + stamp() + ' !' + pad(mode, 1) + ' ' + pad(method, 4) + ' ' + String(status)
     + ' ' + (why ? pad(why, 22) : pad('', 22)) + ' ' + redact(url);
 }
 
 /** One error raised by the page's own JavaScript. */
 export function clientLine({ message = '', source = '', line = 0, col = 0, kind = 'error' } = {}) {
   const where = source ? ` · ${redact(source, { max: 90 })}:${line || 0}:${col || 0}` : '';
-  return `umbra·page ${kind}: ${String(message).replace(/\s+/g, ' ').slice(0, 200)}${where}`;
+  return `umbra·page ${stamp()} ${kind}: ${String(message).replace(/\s+/g, ' ').slice(0, 200)}${where}`;
 }
 
 /** Print only when tracing is on. Callers do not need to check first. */

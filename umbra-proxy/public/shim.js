@@ -1224,11 +1224,22 @@
           }).catch(function () {});
         } catch (e) { /* a reporting failure must never break the page */ }
       }
+      /* A navigation cancels every request still in flight, and each one
+         then fires the same error event a genuinely broken response would.
+         Say when the document starts leaving, so the two can be told
+         apart by reading down the page rather than by guessing. */
+      addEventListener('beforeunload', function () {
+        report('nav', 'document is navigating away — requests still in flight will abort', LOGICAL, 0, 0);
+      });
+      addEventListener('pagehide', function () {
+        report('nav', 'document hidden (navigated or replaced)', LOGICAL, 0, 0);
+      });
+
       addEventListener('error', function (e) {
         if (!current()) return;
         if (e && e.target && e.target !== window && e.target.tagName) {
           /* a subresource that failed to load, not a thrown exception */
-          return report('error', e.target.tagName.toLowerCase() + ' failed to load',
+          return report('error', e.target.tagName.toLowerCase() + ' failed to load [readyState=' + document.readyState + ']',
             logical(e.target.src || e.target.href || ''), 0, 0);
         }
         report('error', (e && e.message) || 'unknown error', logical(e && e.filename), e && e.lineno, e && e.colno);

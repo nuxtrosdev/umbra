@@ -1540,7 +1540,7 @@ async function route(req, res) {
         source: String(one.source || ''),
         line: Number(one.line || 0) || 0,
         col: Number(one.col || 0) || 0,
-        kind: one.kind === 'rejection' ? 'rejection' : 'error',
+        kind: one.kind === 'rejection' ? 'rejection' : one.kind === 'nav' ? 'nav' : 'error',
       }));
     }
     return json(res, { ok: true });
