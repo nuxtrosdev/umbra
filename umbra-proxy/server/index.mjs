@@ -718,6 +718,23 @@ border-radius:8px;padding:10px 16px;cursor:pointer}button[disabled]{opacity:.5;c
         errPage(ctx, url, 'upstream refused: ' + (e.message || e), chain));
     }
     chain.push({ status: up.status, url: up.url, location: up.location || null });
+    if (opts.onRefused && (up.status === 403 || up.status === 401)) {
+      const fresh = await opts.onRefused();
+      up.res.resume();
+      if (fresh) {
+        console.log(`umbra: googlevideo refused a media url (${up.status}); re-minted and redirecting`);
+        return send(res, 302, {
+          location: fresh,
+          'cache-control': 'no-store',
+          ...metaHeaders({ kind: 'media-refresh', why: 'refused ' + up.status }),
+        }, '');
+      }
+      /* Nothing better exists. Say so in a way the player can repeat to
+         the viewer, rather than passing on an empty 403 it cannot read. */
+      return fail(res, 502, 'the media host refused this url and a fresh one could not be obtained',
+        'googlevideo answered ' + up.status + ' — the signature is bound to an address or a token this '
+        + 'server does not have, and re-extraction did not produce a working url');
+    }
     if (TRACE) {
       trace(wireLine({
         mode, method: upMethod, url: up.url || url, status: up.status,
@@ -1887,6 +1904,20 @@ async function route(req, res) {
 
     const ctx = mkCtx(t.u, head, t.t);
     const mopts = { mode: head, range: req.headers.range || null };
+    /* Expiry is the predictable reason a media url stops working, and it
+       is handled above. It is not the only one: googlevideo also refuses a
+       url whose signature was issued for another address, one whose key
+       has rotated, or one that now requires a token it was minted without.
+       All of those arrive as a bare 403 with an empty body, which a media
+       element can only report as "format error" — it asked for a video and
+       received nothing at all.
+       
+       A refusal is therefore worth exactly what an expiry is worth: one
+       attempt at a fresh url. The `r` flag still bounds it to a single
+       retry, so a video that is genuinely unavailable cannot loop. */
+    if (head === 'm' && t.v && !t.r) {
+      mopts.onRefused = () => reResolveMedia(t, s, mkCtx);
+    }
     if (req.method && !/^(GET|HEAD)$/i.test(req.method)) {
       /* fetch/XHR with a payload (JSON RPCs, uploads): the body rode the
          browser→origin leg untouched — forward it, don't drop it */

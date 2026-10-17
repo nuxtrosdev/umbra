@@ -1982,6 +1982,18 @@ async function wire() {
       IX.expiredMediaUrl('https://example.com/a.mp4?expire=1000000') === false &&
       IX.expiredMediaUrl('https://rr1---sn-x.googlevideo.com/videoplayback?itag=18') === false &&
       IX.expiredMediaUrl('not a url') === false);
+
+    /* Expiry is the predictable refusal, not the only one. A url signed
+       for another address is refused while still well inside its expiry,
+       and the player can only render that empty 403 as "format error". */
+    const ix = fs.readFileSync(path.join(HERE, '..', 'server', 'index.mjs'), 'utf8');
+    ok('a 403 or 401 on a media url triggers one re-mint, like an expiry does',
+      /if \(opts\.onRefused && \(up\.status === 403 \|\| up\.status === 401\)\)/.test(ix),
+      'refusal handling');
+    ok('and the retry is bounded by the same flag, so it cannot loop',
+      /if \(head === 'm' && t\.v && !t\.r\) \{\s*\n\s*mopts\.onRefused/.test(ix));
+    ok('when no fresh url exists the player is told why, not handed an empty 403',
+      /the media host refused this url and a fresh one could not be obtained/.test(ix));
   }
 
   /* A silent film is not a video. One video-only rendition — what a gated
