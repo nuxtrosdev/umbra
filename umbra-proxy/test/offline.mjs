@@ -1014,6 +1014,46 @@ async function unit() {
   }
 }
 
+/* ---- an upstream may describe its bytes, not reconfigure this origin ---- */
+{
+  const N = await import('../server/net.mjs');
+  const fake = { headers: {
+    'content-type': 'text/javascript', 'content-length': '14336', 'etag': 'W/"x"',
+    'cache-control': 'public, max-age=31536000', 'accept-ranges': 'bytes',
+    'alt-svc': 'h3=":443"; ma=2592000,h3-29=":443"',
+    'link': '<https://fonts.gstatic.com/x.woff2>; rel=preload; as=font',
+    'clear-site-data': '"storage"',
+    'strict-transport-security': 'max-age=31536000',
+    'timing-allow-origin': '*', 'server': 'sffe', 'via': '1.1 google',
+    'x-xss-protection': '0', 'server-timing': 'gfet4t7; dur=11',
+    'set-cookie': 'a=b', 'content-security-policy': "default-src 'none'",
+  } };
+  const out = N.outboundHeaders(fake, { 'cache-control': 'private, max-age=300' });
+
+  ok('alt-svc never reaches the browser — it would point it at a port we do not serve',
+    out['alt-svc'] === undefined, JSON.stringify(out['alt-svc']));
+  ok('a preload Link header cannot drag the browser off the wire', out.link === undefined);
+  ok('an upstream cannot clear this origin\u2019s storage', out['clear-site-data'] === undefined);
+  ok('nor pin a scheme we do not serve', out['strict-transport-security'] === undefined);
+  ok('fingerprinting and timing headers are dropped with the rest',
+    !out.server && !out.via && !out['server-timing'] && !out['timing-allow-origin']);
+  ok('set-cookie and csp stay dropped as before',
+    !out['set-cookie'] && !out['content-security-policy']);
+
+  ok('but the headers that describe the bytes all survive',
+    out['content-type'] === 'text/javascript' &&
+    out.etag === 'W/"x"' && out['accept-ranges'] === 'bytes',
+    JSON.stringify(out));
+  ok('content-length stays hop-by-hop here and is restored by the caller',
+    out['content-length'] === undefined);
+  ok('and our own values still win over the upstream\u2019s',
+    out['cache-control'] === 'private, max-age=300');
+  ok('content-encoding survives, or every piped script becomes noise',
+    N.outboundHeaders({ headers: { 'content-encoding': 'br' } })['content-encoding'] === 'br');
+  ok('an invented header is dropped by default rather than forwarded',
+    N.outboundHeaders({ headers: { 'x-google-next-big-idea': 'surprise' } })['x-google-next-big-idea'] === undefined);
+}
+
 /* ---- a refusal we generate ourselves has to show up in the trace ---- */
 {
   const TR = await import('../server/trace.mjs');

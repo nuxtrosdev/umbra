@@ -25,6 +25,45 @@ const DROP_RESPONSE_HEADERS = new Set([
   'refresh', 'set-cookie', 'report-to', 'nel',
 ]);
 
+/* Everything else is dropped, and this is the important half.
+ *
+ * A denylist was the wrong shape for this job. An upstream response carries
+ * headers that are instructions about *an origin*, and once they are
+ * forwarded the browser applies them to **ours** — which is not the origin
+ * they were written for. The one that cost a week of skeleton pages:
+ *
+ *   alt-svc: h3=":443"; ma=2592000
+ *
+ * Google advertises HTTP/3 on every static response. Forwarded, it tells
+ * the browser that *this* proxy is reachable over QUIC on port 443, so
+ * Chrome stops using the connection that works and races one to a port
+ * nothing is listening on. The requests fail before a byte is read:
+ * transferSize 0, responseStatus 0, "Failed to fetch" — while the server
+ * log shows a clean 200 for every one of them, because the server really
+ * did answer. Server-side logs and browser-side logs both told the truth
+ * and still disagreed, which is exactly what a transport-level fault looks
+ * like from either end alone.
+ *
+ * The same class of mistake was waiting in several other headers:
+ *   link: <...>; rel=preload   makes the browser fetch off the wire;
+ *   clear-site-data            lets an upstream wipe this origin's storage;
+ *   strict-transport-security  pins a scheme we do not serve;
+ *   timing-allow-origin,
+ *   origin-trial, server-timing, via, server, p3p, x-xss-protection
+ *                              leak or misconfigure, and buy nothing.
+ *
+ * So: an allowlist of headers that describe *the bytes in this response*,
+ * which is the only thing an upstream is entitled to tell the browser
+ * through a proxy. Anything unrecognised is dropped, including whatever
+ * Google invents next.
+ */
+const PASS_RESPONSE_HEADERS = new Set([
+  'content-type', 'content-length', 'content-range', 'content-encoding',
+  'content-language', 'content-disposition',
+  'accept-ranges', 'cache-control', 'expires', 'last-modified', 'etag',
+  'age', 'vary', 'date',
+]);
+
 const UA =
   process.env.UMBRA_UA ||
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -227,9 +266,10 @@ export function outboundHeaders(upRes, extra = {}) {
   for (const [k, v] of Object.entries(upRes.headers)) {
     const lk = k.toLowerCase();
     if (HOP_BY_HOP.has(lk) || DROP_RESPONSE_HEADERS.has(lk)) continue;
-    out[k] = Array.isArray(v) ? v.join(', ') : v;
+    if (!PASS_RESPONSE_HEADERS.has(lk)) continue;
+    out[lk] = Array.isArray(v) ? v.join(', ') : v;
   }
   return { ...out, ...extra };
 }
 
-export { UA, MAX_BODY, DROP_RESPONSE_HEADERS };
+export { UA, MAX_BODY, DROP_RESPONSE_HEADERS, PASS_RESPONSE_HEADERS };
