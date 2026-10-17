@@ -1022,7 +1022,7 @@ async function unit() {
     l.includes('!s') && l.includes('403') && l.includes('bad token') && l.includes('base.js'), l);
   const shim = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
   ok('a failed subresource resolves its token back to a filename',
-    /function logical\(/.test(shim) && /logical\(e\.target\.src/.test(shim));
+    /function logical\(/.test(shim) && /logical\(el\.src \|\| el\.href/.test(shim));
   ok('and a malformed token still reports something rather than throwing',
     /catch \(e\) \{ return u; \}/.test(shim));
 }
