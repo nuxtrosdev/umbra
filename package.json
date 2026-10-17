@@ -20,5 +20,8 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "a web proxy"
+  "description": "a web proxy",
+  "engines": {
+    "node": ">=18.17"
+  }
 }

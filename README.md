@@ -5,7 +5,7 @@ ever talks to Umbra — no direct requests to the origin, no third-party cookies
 no leaked referrer.
 
 ```
-npm start            # http://0.0.0.0:4173
+npm start            # then open http://localhost:4173
 npm test             # offline suite, no network required
 ```
 
@@ -154,6 +154,11 @@ Then open the forwarded port. Two things to set:
   Public) if you want to reach it from outside the editor. Codespaces' private
   forwarding injects an auth redirect that Umbra's own redirect handling will
   chase.
+- Open **`http://localhost:4173`**, not `http://0.0.0.0:4173`. The second is a
+  bind address meaning "every interface" and is not a destination; Chrome on
+  Windows rejects it outright with `ERR_ADDRESS_INVALID`. The startup banner
+  prints the URLs that work, including your LAN address for testing from a
+  phone. Set `UMBRA_HOST=127.0.0.1` to refuse connections from other machines.
 - Nothing else needs configuring. Umbra binds `0.0.0.0` and takes its host from
   the request, so the forwarded `*.app.github.dev` hostname works as-is.
 

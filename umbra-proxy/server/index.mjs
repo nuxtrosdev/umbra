@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { listenBanner } from './listen-urls.mjs';
 
 import {
   PFX, MODES, encodeToken, decodeToken, newSession, newTab, COOKIE_NAME, readSession,
@@ -1983,9 +1984,19 @@ server.on('error', (e) => {
   }
   process.exit(1);
 });
+/* A laptop is not a Codespace: it may be carrying an older node than the one
+   the project was written against. Say so in one line instead of failing
+   later inside an import with a syntax error nobody can read. */
+const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
+if (NODE_MAJOR < 18) {
+  console.error(`umbra: node ${process.versions.node} is too old — umbra needs node 18.17 or newer (nodejs.org/en/download).`);
+  process.exit(1);
+}
+
 server.listen(PORT, HOST, () => {
-  console.log(`umbra/1 origin listening on http://${HOST}:${PORT}  ·  shell at /  ·  wire at ${PFX}<mode>/<token>`);
-  console.log(`  modes: ${[...MODES].join(' ')}   session store: memory   egress UA: ${UA.slice(0, 38)}…`);
+  for (const line of listenBanner(HOST, PORT)) console.log(`umbra/1  ${line}`);
+  console.log(`  shell at /  ·  wire at ${PFX}<mode>/<token>  ·  modes: ${[...MODES].join(' ')}`);
+  console.log(`  session store: memory   egress UA: ${UA.slice(0, 38)}…   node ${process.versions.node}`);
 });
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 process.on('uncaughtException', (e) => console.error('umbra:', e && e.stack));

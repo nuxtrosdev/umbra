@@ -959,6 +959,24 @@ async function unit() {
     Y.parseVideoId('https://www.youtube.com/playlist?list=abc') === null);
 }
 
+/* ------- the startup banner has to hand over a url that opens ------- */
+{
+  const LU = await import('../server/listen-urls.mjs');
+  const wild = LU.listenUrls('0.0.0.0', 4173);
+  ok('a wildcard bind is never offered as a destination',
+    wild.primary === 'http://localhost:4173' && !wild.all.some((u) => u.includes('0.0.0.0')),
+    wild.all.join(' '));
+  ok('and the banner says so out loud, because the browser will not',
+    LU.listenBanner('0.0.0.0', 4173).some((l) => /not an address you can open/.test(l)));
+  ok(':: is a wildcard too', LU.listenUrls('::', 4173).primary === 'http://localhost:4173');
+  ok('a specific bind address is echoed back unchanged',
+    LU.listenUrls('127.0.0.1', 4173).primary === 'http://127.0.0.1:4173');
+  ok('an ipv6 literal survives being put in a url',
+    LU.listenUrls('::1', 4173).primary === 'http://[::1]:4173');
+  ok('link-local addresses are skipped rather than printed unusable',
+    !LU.listenUrls('0.0.0.0', 4173).lan.some((u) => /fe80/i.test(u)));
+}
+
 /* ================================================================ wire === */
 async function wire() {
   console.log('\nUMBRA / offline · wire');
