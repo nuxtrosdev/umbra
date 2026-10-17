@@ -62,10 +62,48 @@
     elm.__umbraVia = c.via;
     elm.src = c.src;
   }
+  /* A media element that cannot play says nothing on its own: it keeps the
+     poster up, reports 0:00, and swallows the reason. MediaError has the
+     answer and nobody was reading it, so the viewer was left looking at a
+     still frame with no way to tell a refused byte range from a codec the
+     browser will not touch. */
+  var MEDIA_ERR = {
+    1: 'the browser aborted the fetch',
+    2: 'the network dropped it mid-stream',
+    3: 'the bytes arrived but could not be decoded (codec or truncated stream)',
+    4: 'the source was refused or the format is unsupported',
+  };
+  function mediaWhy(elm) {
+    var e = elm.error;
+    var why = e ? (MEDIA_ERR[e.code] || ('media error ' + e.code)) : 'no error reported';
+    if (e && e.message) why += ' — ' + String(e.message).slice(0, 120);
+    return why + ' [networkState=' + elm.networkState + ' readyState=' + elm.readyState + ']';
+  }
+  /* Say it in the page and in the server's terminal: the person watching
+     and the person debugging are the same person here, and the terminal is
+     where the rest of the story already is. */
+  function reportMedia(kind, message, url) {
+    try { readout.textContent = message; } catch (e) {}
+    try {
+      fetch('/~umbra/clienterr', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'error', message: 'player · ' + kind + ': ' + message, source: url || '' }),
+        keepalive: true,
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
   /* One retry per element, downgrading to the next source. */
   function onSourceError(elm, label) {
     var next = elm.__umbraNext;
-    if (!next) return false;
+    if (!next) {
+      /* Dead end. Previously this returned silently and the player simply
+         sat there, which is how "it just shows 0:00" happens. */
+      reportMedia(label, label + ' cannot play: ' + mediaWhy(elm) +
+        ' · no other source to fall back to', elm.currentSrc || elm.src);
+      return false;
+    }
     elm.__umbraNext = null;
     readout.textContent = label + ' refused by the ' + elm.__umbraVia +
       ' source — falling back to this origin and reloading.';
@@ -97,9 +135,53 @@
       try { audio.currentTime = video.currentTime; } catch (e) {}
     }
   }
+  /* Dual track: the video element carries no audio, so the separate audio
+     element is the only thing anyone can hear — and it took its volume from
+     `video.muted`, which dual track sets to true on purpose. The condition
+     was therefore always true and the volume always zero: dual track could
+     not make a sound, no matter what the controls were doing, and the mute
+     button on the player toggled a track that has no audio in it.
+     
+     The element the user is holding has to be the one that decides. The
+     video element stays the authority for volume and mute, the audio
+     element follows it, and the video is no longer force-muted — muting a
+     silent track bought nothing and cost the control. */
+  function mirrorVolume() {
+    if (state.mode !== 'dual') return;
+    audio.muted = video.muted;
+    audio.volume = video.volume;
+  }
+
   function wireEvents() {
     audio.onerror = function () { onSourceError(audio, 'audio'); };
-    video.addEventListener('play', function () { if (state.mode === 'dual') { audio.volume = video.muted ? 0 : 1; audio.play().catch(function(){}); } });
+    video.addEventListener('error', function () { onSourceError(video, 'video'); });
+    /* Nothing arriving at all is not an error event — it is an absence of
+       events, which no listener fires for. Ask once, out loud, whether
+       anything ever loaded. */
+    video.addEventListener('loadstart', function () {
+      var src = video.currentSrc || video.src;
+      clearTimeout(video.__umbraWatch);
+      video.__umbraWatch = setTimeout(function () {
+        if (video.readyState === 0 && !video.error) {
+          reportMedia('video', 'nothing has arrived after 8 seconds: ' + mediaWhy(video)
+            + ' · the request was accepted but no media bytes reached the player', src);
+        }
+      }, 8000);
+    });
+    video.addEventListener('loadedmetadata', function () {
+      clearTimeout(video.__umbraWatch);
+      if (!video.duration || !isFinite(video.duration)) {
+        reportMedia('video', 'metadata loaded but the duration is unknown — the source is '
+          + 'probably being served without range support, so seeking and total time are lost',
+          video.currentSrc || video.src);
+      }
+    });
+    video.addEventListener('volumechange', mirrorVolume);
+    video.addEventListener('play', function () {
+      if (state.mode !== 'dual') return;
+      mirrorVolume();
+      audio.play().catch(function () {});
+    });
     video.addEventListener('pause', function () { if (state.mode === 'dual') audio.pause(); });
     video.addEventListener('seeked', syncDual);
     video.addEventListener('timeupdate', function () {
@@ -424,8 +506,12 @@
       var v = vids[state.vi] || vids[0];
       var a = auds[state.ai] || auds[0];
       setSrc(video, v);
-      video.muted = true;
+      /* not muted: see mirrorVolume. The track is silent on its own, and
+         muting it only disconnects the control the viewer reaches for. */
+      video.muted = false;
+      if (video.volume === 0) video.volume = 1;
       if (a) setSrc(audio, a);
+      mirrorVolume();
       stage.appendChild(video);
       stage.appendChild(audio);
       ctl.appendChild(btn('dual track (video + separate audio)', 'go', function () {}));

@@ -1909,6 +1909,34 @@ async function wire() {
       'muted handling');
     ok('silence is explained rather than left to be guessed',
       /carries no audio track/.test(src) && /webkitAudioDecodedByteCount/.test(src));
+
+    /* Dual track used to take the audio element's volume from
+       `video.muted`, which dual track itself sets to true — so the only
+       audible element was always silenced, and the control the viewer
+       reaches for moved a track with no sound in it. */
+    ok('dual track no longer silences the only element that can be heard',
+      !/audio\.volume = video\.muted \? 0 : 1/.test(src), 'volume coupling');
+    ok('the audio element follows the control the viewer actually holds',
+      /function mirrorVolume\(/.test(src) &&
+      /audio\.muted = video\.muted/.test(src) &&
+      /audio\.volume = video\.volume/.test(src));
+    ok('and volume changes are mirrored as they happen, not only on play',
+      /addEventListener\('volumechange', mirrorVolume\)/.test(src));
+    ok('dual track leaves the video element unmuted so the control works',
+      /not muted: see mirrorVolume/.test(src));
+
+    /* A player that cannot play has to say why. */
+    ok('MediaError is read and translated instead of swallowed',
+      /MEDIA_ERR = \{/.test(src) && /could not be decoded/.test(src) &&
+      /networkState=/.test(src));
+    ok('a dead end reports itself rather than sitting at 0:00',
+      /no other source to fall back to/.test(src));
+    ok('silence from the network is noticed too, since it fires no event',
+      /nothing has arrived after 8 seconds/.test(src));
+    ok('an unknown duration is named as a range-support problem',
+      /the duration is unknown/.test(src));
+    ok('player faults reach the terminal, where the rest of the story is',
+      /\/~umbra\/clienterr/.test(src));
   }
 
   /* The body rewriter itself, both ways round. */
