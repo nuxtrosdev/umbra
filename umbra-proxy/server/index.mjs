@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
    module below reads it */
 import './flags.mjs';
 import { listenBanner } from './listen-urls.mjs';
-import { TRACE, trace, wireLine, clientLine, redact as redactUrl } from './trace.mjs';
+import { TRACE, trace, wireLine, serveLine, clientLine, redact as redactUrl } from './trace.mjs';
 
 import {
   PFX, MODES, encodeToken, decodeToken, newSession, newTab, COOKIE_NAME, readSession,
@@ -125,7 +125,12 @@ function send(res, status, headers, body) {
 }
 const json = (res, obj, status = 200, headers = {}) =>
   send(res, status, { 'content-type': 'application/json; charset=utf-8', ...headers }, ji(obj));
-const fail = (res, status, error, detail) => json(res, { error, detail }, status);
+const fail = (res, status, error, detail) => {
+  /* carried only so the trace can say why; stripped from the response if
+     tracing is off, and never containing anything but our own wording */
+  if (TRACE) { try { res.setHeader('x-umbra-why', String(error).slice(0, 40)); } catch {} }
+  return json(res, { error, detail }, status);
+};
 const metaHeaders = (meta) => ({ 'x-umbra-meta': encodeMeta(meta) });
 
 /*
@@ -1339,6 +1344,28 @@ function notFound(res, url) {
 
 /* ============================================================= router === */
 const server = http.createServer(async (req, res) => {
+  /* What this origin itself refuses never reaches the wire log, and a
+     starved page is starved precisely by those refusals. Report them once
+     the response is written, resolving the capability token back to the
+     address it stood for — "script failed to load · /~umbra/s/eyJ1Ijoi…"
+     is not an answer, and every one of them looks identical. */
+  if (TRACE) {
+    res.on('finish', () => {
+      if (res.statusCode < 400) return;
+      const seg = String(req.url || '').split('?')[0].split('/').filter(Boolean);
+      let mode = '-';
+      let logical = String(req.url || '');
+      if (seg[0] === '~umbra' && seg[1]) {
+        mode = seg[1];
+        const t = seg[2] ? decodeToken(seg[2]) : null;
+        if (t && t.u) logical = t.u;
+      }
+      trace(serveLine({
+        mode, method: req.method || 'GET', status: res.statusCode, url: logical,
+        why: String(res.getHeader('x-umbra-why') || ''),
+      }));
+    });
+  }
   try { await route(req, res); } catch (e) {
     console.error('umbra route error:', (e && e.stack || e).split('\n').slice(0, 4).join(' | '));
     if (!res.headersSent) send(res, 500, { 'content-type': 'text/html; charset=utf-8' }, errPage({ tabId: '', session: '', policy: s0(), cookieJar: new CookieJar(), origin: originOf(req) }, req.url, 'origin fault: ' + (e.message || e), []));

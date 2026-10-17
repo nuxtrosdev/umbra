@@ -63,6 +63,19 @@ export function wireLine({ mode = '?', method = 'GET', url = '', status = 0, typ
   return 'umbra·wire ' + bits.join(' ');
 }
 
+/** One response this origin produced itself, upstream or not.
+ *
+ * The first trace recorded only exchanges that reached an upstream server,
+ * which is exactly the wrong half when a page is starving: a subresource
+ * refused by our own token check never reaches upstream, so the log stayed
+ * silent about the requests that failed and loud about the ones that
+ * worked. Anything we answer with 4xx/5xx is now reported, carrying the
+ * logical url the token resolves to rather than the token. */
+export function serveLine({ mode = '?', method = 'GET', status = 0, url = '', why = '' } = {}) {
+  return 'umbra·serve !' + pad(mode, 1) + ' ' + pad(method, 4) + ' ' + String(status)
+    + ' ' + (why ? pad(why, 22) : pad('', 22)) + ' ' + redact(url);
+}
+
 /** One error raised by the page's own JavaScript. */
 export function clientLine({ message = '', source = '', line = 0, col = 0, kind = 'error' } = {}) {
   const where = source ? ` · ${redact(source, { max: 90 })}:${line || 0}:${col || 0}` : '';

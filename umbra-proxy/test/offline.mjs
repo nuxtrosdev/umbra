@@ -930,6 +930,16 @@ async function unit() {
   ok('srcset candidates each rewired', (out.match(/\/~umbra\/s\//g) || []).length >= 3);
   ok('form action minted as mode f', /action="\/~umbra\/f\//.test(out));
   ok('<base> stripped (explicit re-anchor instead)', !/<base/i.test(out));
+
+  /* SRI over rewritten bytes can only fail, and failing means the script is
+     discarded rather than merely unverified. */
+  const sri = rw('<script src="/a.js" integrity="sha384-abc123" crossorigin="anonymous"></script>' +
+    '<link rel="stylesheet" href="/a.css" integrity="sha256-zzz">');
+  ok('integrity is dropped: its hash cannot survive a rewriting proxy',
+    !/integrity=/i.test(sri), sri.slice(0, 140));
+  ok('the script is still pulled onto the wire', /src="\/~umbra\/s\//.test(sri));
+  ok('crossorigin is left alone — harmless on a same-origin url',
+    /crossorigin="anonymous"/.test(sri));
   ok('meta refresh converted, never a live redirect', /http-equiv="umbra-refresh"/.test(out) && /data-umbra-target="http:\/\/127\.0\.0\.1:\d+\/later"/.test(out));
   ok('inline style url() rewired', /url\((&quot;|")\/~umbra\//.test(out));
   ok('noscript markup still rewritten', /<noscript><img src="\/~umbra\/s\//.test(out));
@@ -957,6 +967,19 @@ async function unit() {
     Y.parseVideoId('https://www.youtube.com/shorts/' + VID + '?x=1') === VID &&
     Y.parseVideoId('https://www.youtube.com/embed/' + VID) === VID &&
     Y.parseVideoId('https://www.youtube.com/playlist?list=abc') === null);
+}
+
+/* ---- a refusal we generate ourselves has to show up in the trace ---- */
+{
+  const TR = await import('../server/trace.mjs');
+  const l = TR.serveLine({ mode: 's', method: 'GET', status: 403, url: 'https://www.youtube.com/s/player/base.js', why: 'bad token' });
+  ok('our own refusals are marked and name the logical address',
+    l.includes('!s') && l.includes('403') && l.includes('bad token') && l.includes('base.js'), l);
+  const shim = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+  ok('a failed subresource resolves its token back to a filename',
+    /function logical\(/.test(shim) && /logical\(e\.target\.src/.test(shim));
+  ok('and a malformed token still reports something rather than throwing',
+    /catch \(e\) \{ return u; \}/.test(shim));
 }
 
 /* ---- flags, so the diagnostic is reachable from any shell ---- */

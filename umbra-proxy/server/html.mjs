@@ -254,6 +254,23 @@ export function rewriteHtml(html, o) {
         /* Parsoid (and lazy-load libraries) keep the untouched destination in a
            side attribute. It is inert, but it still spells the target out in the
            DOM, so demote it to the logical umbra address. */
+        /* Subresource integrity cannot survive a rewriting proxy, and must
+           not be left behind to fail.
+           
+           The hash in `integrity` covers the bytes the origin shipped. We
+           serve bytes with every url inside them pointed at the wire, so
+           the hash cannot match by design — and a mismatch is not a quiet
+           degradation: the browser discards the response and fires an error
+           event, so the script never runs at all. One such script in a
+           bootstrap chain is the difference between a page and a skeleton.
+           
+           Dropping it costs nothing here that is not already being paid:
+           the proxy is the trust boundary, the fetch is same-origin to us
+           and already subject to our own policy, and the alternative is a
+           guaranteed failure rather than a protected one. `crossorigin` is
+           left alone — it is harmless on a same-origin url. */
+        if (name === 'integrity' && (tag === 'script' || tag === 'link' || tag === 'style')) return '';
+
         if (name === 'data-mw-original-href' || name === 'data-umbra-original') {
           const abs = resolveRef(value, base);
           return abs ? `${name}="${toUmbra(abs)}"` : `${name}=""`;

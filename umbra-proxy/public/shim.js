@@ -1161,6 +1161,19 @@
   if (ctx.trace) {
     step('trace', function () {
       var sent = 0;
+      /* A wire url is base64url(json) with the logical address inside it.
+         Every failure otherwise reads "/~umbra/s/eyJ1Ijoi…" — the same
+         eight characters every time, since the json always starts {"u":.
+         Resolve it back so a failure names the file that failed. */
+      function logical(u) {
+        try {
+          var m = String(u).match(/\/~umbra\/[a-z]\/([A-Za-z0-9_-]+)\./);
+          if (!m) return u;
+          var json = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
+          var o = JSON.parse(json);
+          return (o && o.u) ? o.u : u;
+        } catch (e) { return u; }
+      }
       function report(kind, message, source, line, col) {
         if (sent++ > 40) return;
         try {
@@ -1183,9 +1196,9 @@
         if (e && e.target && e.target !== window && e.target.tagName) {
           /* a subresource that failed to load, not a thrown exception */
           return report('error', e.target.tagName.toLowerCase() + ' failed to load',
-            e.target.src || e.target.href || '', 0, 0);
+            logical(e.target.src || e.target.href || ''), 0, 0);
         }
-        report('error', (e && e.message) || 'unknown error', e && e.filename, e && e.lineno, e && e.colno);
+        report('error', (e && e.message) || 'unknown error', logical(e && e.filename), e && e.lineno, e && e.colno);
       }, true);
       addEventListener('unhandledrejection', function (e) {
         if (!current()) return;
