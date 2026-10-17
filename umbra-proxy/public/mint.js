@@ -133,28 +133,56 @@
           body: JSON.stringify([bgConfig.requestKey, snap]),
         });
       const itJson = await itRes.json();
-      if (!itJson || !itJson[0]) {
-        throw new Error('no integrity token came back: ' + JSON.stringify(itJson).slice(0, 120));
-      }
-      say('integrity token ok · ' + String(itJson[0]).length + ' chars');
+      if (!itJson) throw new Error('the attestation rpc answered with nothing');
 
-      const minter = await BG.WebPoMinter.create({
-        integrityToken: itJson[0],
-        estimatedTtlSecs: itJson[1],
-        mintRefreshThreshold: itJson[2],
-        websafeFallbackToken: itJson[3],
-      }, webPoSignalOutput);
-      const tok = await minter.mintAsWebsafeString(who.visitorData);
+      const integrityToken = itJson[0];
+      const fallback = itJson[3];
+      let tok = '';
+      let kind = '';
+
+      if (integrityToken && webPoSignalOutput[0]) {
+        /* The good path: a real integrity token and a VM that left its
+           minter behind. The token is minted locally, bound to our identity. */
+        say('integrity token ok · ' + String(integrityToken).length + ' chars');
+        const minter = await BG.WebPoMinter.create({
+          integrityToken: integrityToken,
+          estimatedTtlSecs: itJson[1],
+          mintRefreshThreshold: itJson[2],
+          websafeFallbackToken: fallback,
+        }, webPoSignalOutput);
+        tok = await minter.mintAsWebsafeString(who.visitorData);
+        kind = 'minted';
+      } else if (fallback && String(fallback).length >= 32) {
+        /* Google answered, but declined to issue an integrity token and sent
+           a websafe fallback instead. That is not a failure to report as one:
+           the fallback is the token Google itself nominated for a client it
+           is not fully convinced by, it carries the ttl it just quoted us,
+           and YouTube accepts it for playback at a reduced trust level. The
+           honest description is "degraded", not "broken" - so take it, label
+           it, and let the ladder find out what it is worth. */
+        say('google declined a full token and issued a fallback instead '
+          + '(' + String(fallback).length + ' chars, ttl ' + (itJson[1] || '?') + 's)');
+        say('that is a real token at a lower trust level — taking it.');
+        tok = String(fallback);
+        kind = 'fallback';
+      } else {
+        throw new Error('no integrity token and no fallback: ' + JSON.stringify(itJson).slice(0, 120));
+      }
+
       if (!tok || String(tok).length < 32) throw new Error('botguard returned nothing usable');
 
       say('minted ' + String(tok).length + ' characters. handing it to umbra…');
       const saved = await (await fetch('/~umbra/pot', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ visitorData: who.visitorData, poToken: String(tok) }),
+        body: JSON.stringify({ visitorData: who.visitorData, poToken: String(tok), kind: kind }),
       })).json();
       if (!saved.ok) throw new Error(saved.error || 'umbra refused the token');
       say('done — the server will use this for extraction until it expires.', 'ok');
+      if (kind === 'fallback') {
+        say('because this is a fallback token, extraction may still be gated. '
+          + 'if it is, the failure is google\u2019s trust in this address, not the plumbing.', '');
+      }
       say('try a video that failed a moment ago.', 'ok');
     } catch (e) {
       say('failed: ' + (e && e.message ? e.message : String(e)), 'bad');

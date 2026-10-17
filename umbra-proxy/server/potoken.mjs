@@ -72,19 +72,25 @@ const harvest = new Map();
 let latest = null;
 let harvestCount = 0;
 
-export function observe({ poToken = '', visitorData = '', videoId = '' } = {}) {
+export function observe({ poToken = '', visitorData = '', videoId = '', kind = '' } = {}) {
   const tok = String(poToken || '').trim();
   /* BotGuard tokens are long opaque base64url. Anything short is a field we
      misread, and storing it would poison every later request. */
   if (tok.length < 32 || tok.length > 1024 || !/^[\w\-%.+/=]+$/.test(tok)) return null;
   const key = String(visitorData || '') || '(none)';
   const prev = harvest.get(key);
-  const rec = { token: tok, at: Date.now(), videoId: String(videoId || '') };
+  /* "minted" means BotGuard left a minter behind and we produced the token
+     locally; "fallback" means Google declined an integrity token and named
+     this one instead. The second works at a lower trust level, and every
+     report that mentions the token has to say which it is holding rather
+     than let a degraded answer pass for a full one. */
+  const k = /^(minted|fallback|harvested)$/.test(String(kind)) ? String(kind) : 'harvested';
+  const rec = { token: tok, at: Date.now(), videoId: String(videoId || ''), kind: k };
   harvest.set(key, rec);
   latest = { visitorData: key === '(none)' ? '' : key, ...rec };
   if (!prev || prev.token !== tok) harvestCount++;
   /* a harvested token supersedes whatever was cached for that identity */
-  cache.set(key, { token: tok, at: rec.at, source: 'harvested' });
+  cache.set(key, { token: tok, at: rec.at, source: k === 'fallback' ? 'harvested-fallback' : 'harvested' });
   return latest;
 }
 
@@ -95,7 +101,9 @@ const fresh = (rec) => !!rec && Date.now() - rec.at < HARVEST_TTL;
  * pair or neither half of it.
  */
 export function harvestedIdentity() {
-  return fresh(latest) ? { visitorData: latest.visitorData, poToken: latest.token, at: latest.at } : null;
+  return fresh(latest)
+    ? { visitorData: latest.visitorData, poToken: latest.token, at: latest.at, kind: latest.kind || 'harvested' }
+    : null;
 }
 
 export function resetHarvest() {

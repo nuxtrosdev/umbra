@@ -959,6 +959,28 @@ async function unit() {
     Y.parseVideoId('https://www.youtube.com/playlist?list=abc') === null);
 }
 
+/* ---- a fallback token is a real token, and has to be labelled as one ---- */
+{
+  const POT = await import('../server/potoken.mjs');
+  POT.resetHarvest();
+  const TOKEN = 'M' + 'k'.repeat(180);
+  const full = POT.observe({ poToken: TOKEN, visitorData: 'CgtV1', kind: 'minted' });
+  ok('a locally minted token is kept as minted', full && full.kind === 'minted', full && full.kind);
+  POT.resetHarvest();
+  const fb = POT.observe({ poToken: TOKEN, visitorData: 'CgtV1', kind: 'fallback' });
+  ok('google\u2019s fallback is accepted rather than discarded',
+    !!fb && fb.token === TOKEN, fb ? 'accepted' : 'dropped');
+  ok('but it is never allowed to pass for a full one',
+    fb.kind === 'fallback' && POT.harvestedIdentity().kind === 'fallback', fb.kind);
+  POT.resetHarvest();
+  ok('an unknown kind degrades to harvested instead of being trusted',
+    POT.observe({ poToken: TOKEN, visitorData: 'CgtV1', kind: 'wishful' }).kind === 'harvested');
+  POT.resetHarvest();
+  ok('the page takes the fallback branch only when there is no integrity token',
+    /integrityToken && webPoSignalOutput\[0\]/.test(
+      fs.readFileSync(path.join(HERE, '..', 'public', 'mint.js'), 'utf8')));
+}
+
 /* ------- the startup banner has to hand over a url that opens ------- */
 {
   const LU = await import('../server/listen-urls.mjs');

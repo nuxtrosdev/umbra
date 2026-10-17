@@ -1844,11 +1844,13 @@ async function route(req, res) {
     const rec = pot.observe({
       poToken: String((body && body.poToken) || ''),
       visitorData: String((body && body.visitorData) || ''),
+      kind: String((body && body.kind) || ''),
     });
     if (!rec) return json(res, { ok: false, error: 'that did not look like a token' }, 400);
-    console.log('umbra: a browser minted a proof-of-origin token for '
-      + String(rec.visitorData || '(none)').slice(0, 12) + '…');
-    return json(res, { ok: true, length: rec.token.length });
+    console.log('umbra: a browser produced a ' + (rec.kind || 'harvested')
+      + ' proof-of-origin token for ' + String(rec.visitorData || '(none)').slice(0, 12) + '…'
+      + (rec.kind === 'fallback' ? ' (google declined a full one; extraction may still be gated)' : ''));
+    return json(res, { ok: true, length: rec.token.length, kind: rec.kind });
   }
 
   /* ---- hls manifests: rewritten so segments stay on the wire ---- */
