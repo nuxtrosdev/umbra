@@ -721,7 +721,12 @@ border-radius:8px;padding:10px 16px;cursor:pointer}button[disabled]{opacity:.5;c
     if (TRACE) {
       trace(wireLine({
         mode, method: upMethod, url: up.url || url, status: up.status,
-        type: up.res.headers['content-type'] || '',
+        /* media is served in ranges, and a range that came back as a full
+           200 — or as html — is the difference between a player that seeks
+           and one that refuses the source outright */
+        type: (up.res.headers['content-type'] || '')
+          + (mode === 'm' && opts.range ? ' want:' + opts.range : '')
+          + (up.res.headers['content-range'] ? ' got:' + up.res.headers['content-range'] : ''),
         bytes: Number(up.res.headers['content-length'] || -1),
         ms: Date.now() - t0,
       }));

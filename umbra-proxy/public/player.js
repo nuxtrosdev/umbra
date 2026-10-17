@@ -79,6 +79,42 @@
     if (e && e.message) why += ' — ' + String(e.message).slice(0, 120);
     return why + ' [networkState=' + elm.networkState + ' readyState=' + elm.readyState + ']';
   }
+  /* "Format error" is the browser saying the bytes are not a media
+     container it recognises. That is a statement about the bytes, and the
+     bytes are one request away: ask for the first 64 of them and look.
+     An error page, a json refusal and a truncated stream all announce
+     themselves immediately in a container's magic number, and all three
+     are indistinguishable from the sofa. */
+  var CONTAINERS = [
+    [4, 'ftyp', 'mp4/m4a'], [0, '\u001aE\u00df\u00a3', 'webm/matroska'],
+    [0, 'OggS', 'ogg'], [0, 'FLV', 'flv'], [0, 'ID3', 'mp3'], [0, '#EXTM3U', 'hls playlist'],
+  ];
+  function sniff(bytes) {
+    var txt = '';
+    for (var i = 0; i < bytes.length; i++) txt += String.fromCharCode(bytes[i]);
+    for (var j = 0; j < CONTAINERS.length; j++) {
+      if (txt.substr(CONTAINERS[j][0], CONTAINERS[j][1].length) === CONTAINERS[j][1]) return CONTAINERS[j][2];
+    }
+    if (/^\s*[<{[]/.test(txt)) return 'not media at all — looks like ' + (txt[0] === '<' ? 'html/xml' : 'json') + ': ' + txt.slice(0, 48).replace(/\s+/g, ' ');
+    var hex = '';
+    for (var k = 0; k < Math.min(8, bytes.length); k++) hex += ('0' + bytes[k].toString(16)).slice(-2) + ' ';
+    return 'unrecognised container (first bytes ' + hex.trim() + ')';
+  }
+  function inspectSource(url, then) {
+    if (!url) return then('');
+    fetch(url, { headers: { range: 'bytes=0-63' }, cache: 'no-store' })
+      .then(function (r) {
+        return r.arrayBuffer().then(function (b) {
+          var u8 = new Uint8Array(b);
+          then(' · the source answered ' + r.status
+            + ' ' + (r.headers.get('content-type') || 'no content-type')
+            + ' range=' + (r.headers.get('content-range') || 'none')
+            + ' len=' + u8.length + 'b · ' + sniff(u8));
+        });
+      })
+      .catch(function (e) { then(' · and a direct read of it also failed: ' + (e && e.message)); });
+  }
+
   /* Say it in the page and in the server's terminal: the person watching
      and the person debugging are the same person here, and the terminal is
      where the rest of the story already is. */
@@ -100,8 +136,12 @@
     if (!next) {
       /* Dead end. Previously this returned silently and the player simply
          sat there, which is how "it just shows 0:00" happens. */
-      reportMedia(label, label + ' cannot play: ' + mediaWhy(elm) +
-        ' · no other source to fall back to', elm.currentSrc || elm.src);
+      var src = elm.currentSrc || elm.src;
+      var base = label + ' cannot play: ' + mediaWhy(elm) + ' · no other source to fall back to';
+      reportMedia(label, base, src);
+      inspectSource(src, function (detail) {
+        if (detail) reportMedia(label, base + detail, src);
+      });
       return false;
     }
     elm.__umbraNext = null;

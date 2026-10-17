@@ -1937,6 +1937,10 @@ async function wire() {
       /the duration is unknown/.test(src));
     ok('player faults reach the terminal, where the rest of the story is',
       /\/~umbra\/clienterr/.test(src));
+    ok('a refused source is read directly, since "format error" is about bytes',
+      /function inspectSource\(/.test(src) && /range: 'bytes=0-63'/.test(src));
+    ok('and those bytes are identified rather than printed raw',
+      /function sniff\(/.test(src) && /ftyp/.test(src) && /not media at all/.test(src));
   }
 
   /* The body rewriter itself, both ways round. */
