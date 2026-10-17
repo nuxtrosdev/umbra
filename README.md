@@ -62,8 +62,12 @@ JavaScript threw while consuming it. Guessing between them is how you patch
 the wrong half of a proxy.
 
 ```
-UMBRA_TRACE=1 npm start
+npm run trace
 ```
+
+(or `npm start -- --trace`, or `UMBRA_TRACE=1 npm start` if your shell takes
+a variable prefix — the flag works the same in cmd.exe, PowerShell and bash,
+which the prefix does not. `npm start -- --help` lists the rest.)
 
 Every upstream exchange, and every exception raised inside a proxied
 document, prints to the terminal:

@@ -959,6 +959,25 @@ async function unit() {
     Y.parseVideoId('https://www.youtube.com/playlist?list=abc') === null);
 }
 
+/* ---- flags, so the diagnostic is reachable from any shell ---- */
+{
+  const FL = await import('../server/flags.mjs');
+  const env = {};
+  const r = FL.applyFlags(['--trace', '--port', '5000', '--host=127.0.0.1', '--bogus'], env);
+  ok('--trace turns tracing on without a shell-specific prefix', env.UMBRA_TRACE === '1');
+  ok('--port takes a separate argument and --host an inline one',
+    env.PORT === '5000' && env.UMBRA_HOST === '127.0.0.1', JSON.stringify(env));
+  ok('an unknown flag is reported, not silently swallowed',
+    r.unknown.length === 1 && r.unknown[0] === '--bogus');
+  const env2 = { PORT: '9', UMBRA_TRACE: '' };
+  FL.applyFlags(['--port', '5000', '--trace'], env2);
+  ok('an existing environment variable is never overwritten by a flag',
+    env2.PORT === '9', JSON.stringify(env2));
+  ok('but an empty one is treated as unset', env2.UMBRA_TRACE === '1');
+  ok('--help is recognised', FL.applyFlags(['--help'], {}).help === true);
+  ok('bare arguments are left alone', FL.applyFlags(['server.mjs'], {}).unknown.length === 0);
+}
+
 /* ---- the trace has to be readable and must never carry a credential ---- */
 {
   const TR = await import('../server/trace.mjs');

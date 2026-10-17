@@ -13,6 +13,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+/* first, so that --trace and friends are in the environment before any
+   module below reads it */
+import './flags.mjs';
 import { listenBanner } from './listen-urls.mjs';
 import { TRACE, trace, wireLine, clientLine, redact as redactUrl } from './trace.mjs';
 
