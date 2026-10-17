@@ -1152,6 +1152,50 @@
     if (pk >= 2) { pk = 0; post('panic', {}); }
   }, true);
 
+  /* UMBRA_TRACE=1 only: forward this document's own exceptions to the
+     server so they land in the terminal next to the wire log. A page that
+     paints its skeleton and stops has either been starved of data or thrown
+     while consuming it, and those two have opposite fixes. Nothing is sent
+     when tracing is off, and the payload is message/file/line — never page
+     content, never anything that could carry a credential. */
+  if (ctx.trace) {
+    step('trace', function () {
+      var sent = 0;
+      function report(kind, message, source, line, col) {
+        if (sent++ > 40) return;
+        try {
+          fetch(PFX + 'clienterr', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              kind: kind,
+              message: String(message || '').slice(0, 300),
+              source: String(source || '').slice(0, 200),
+              line: line || 0,
+              col: col || 0,
+            }),
+            keepalive: true,
+          }).catch(function () {});
+        } catch (e) { /* a reporting failure must never break the page */ }
+      }
+      addEventListener('error', function (e) {
+        if (!current()) return;
+        if (e && e.target && e.target !== window && e.target.tagName) {
+          /* a subresource that failed to load, not a thrown exception */
+          return report('error', e.target.tagName.toLowerCase() + ' failed to load',
+            e.target.src || e.target.href || '', 0, 0);
+        }
+        report('error', (e && e.message) || 'unknown error', e && e.filename, e && e.lineno, e && e.colno);
+      }, true);
+      addEventListener('unhandledrejection', function (e) {
+        if (!current()) return;
+        var r = e && e.reason;
+        report('rejection', (r && (r.message || r.toString && r.toString())) || 'unhandled rejection',
+          (r && r.fileName) || '', (r && r.lineNumber) || 0, 0);
+      });
+    });
+  }
+
   DIAG.ready = true;
   post('ready', { url: LOGICAL, diag: DIAG.done.length });
 })();

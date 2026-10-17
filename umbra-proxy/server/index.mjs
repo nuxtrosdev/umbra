@@ -14,6 +14,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { listenBanner } from './listen-urls.mjs';
+import { TRACE, trace, wireLine, clientLine, redact as redactUrl } from './trace.mjs';
 
 import {
   PFX, MODES, encodeToken, decodeToken, newSession, newTab, COOKIE_NAME, readSession,
@@ -482,6 +483,7 @@ function localDoc(ctx, html, baseUrl, extraHead = '', logical = '') {
     session: ctx.session || '',
     origin: ctx.origin,
     ephemeral: ctx.policy.ephemeral ? 1 : 0,
+    trace: TRACE ? 1 : 0,
     hops: [],
   };
   let out = injectShim(rewritten, ji(ctxObj), PFX + 'shim.js');
@@ -684,6 +686,7 @@ border-radius:8px;padding:10px 16px;cursor:pointer}button[disabled]{opacity:.5;c
 
     for (const k of Object.keys(headers)) if (headers[k] == null || headers[k] === '') delete headers[k];
 
+    const t0 = TRACE ? Date.now() : 0;
     try {
       up = await upstream(url, {
         method: upMethod,
@@ -702,10 +705,19 @@ border-radius:8px;padding:10px 16px;cursor:pointer}button[disabled]{opacity:.5;c
         url = httpUrl;
         continue;
       }
+      trace(wireLine({ mode, method: upMethod, url, status: 0, type: String(e.message || e).slice(0, 40), ms: Date.now() - t0 }));
       return send(res, 502, { 'content-type': 'text/html; charset=utf-8', ...metaHeaders({ kind: 'error', url, error: String(e.message || e) }) },
         errPage(ctx, url, 'upstream refused: ' + (e.message || e), chain));
     }
     chain.push({ status: up.status, url: up.url, location: up.location || null });
+    if (TRACE) {
+      trace(wireLine({
+        mode, method: upMethod, url: up.url || url, status: up.status,
+        type: up.res.headers['content-type'] || '',
+        bytes: Number(up.res.headers['content-length'] || -1),
+        ms: Date.now() - t0,
+      }));
+    }
     for (const sc of [].concat(up.res.headers['set-cookie'] || [])) ctx.cookieJar.store(sc, up.url);
 
     const st = up.status;
@@ -858,6 +870,7 @@ ${/json/.test(ct) ? '<script>try{var j=JSON.parse(document.querySelector("pre").
     session: ctx.session || '',
     origin: ctx.origin,
     ephemeral: ctx.policy.ephemeral ? 1 : 0,
+    trace: TRACE ? 1 : 0,
     /* the redirect chain that landed here, oldest hop first — the shell shows
        the final address in the bar and the hop count beside it. Synthetic
        status-0 entries (https→http loopback fallback) are wire diagnostics,
@@ -1482,6 +1495,27 @@ async function route(req, res) {
      The field names here are the spec's (`blocked-uri`, not `blocked-url`):
      the old pair matched nothing, so every entry recorded an empty string.
      Both the report-uri shape and the Reporting API shape are accepted. */
+  /* The other half of the account: exceptions raised inside the proxied
+     document. A skeleton page with a clean wire log means the data arrived
+     and the page's javascript threw on it, which is a different bug in a
+     different file — and without this endpoint that distinction costs a
+     devtools session the person running the server should not need. */
+  if (head === 'clienterr' && req.method === 'POST') {
+    if (!TRACE) return json(res, { ok: true, ignored: 'tracing is off' });
+    let rep = {};
+    try { rep = JSON.parse((await readReq(req, 32 * 1024)).toString('utf8') || '{}'); } catch { rep = {}; }
+    for (const one of (Array.isArray(rep) ? rep : [rep]).slice(0, 20)) {
+      console.log(clientLine({
+        message: String(one.message || '').slice(0, 300),
+        source: String(one.source || ''),
+        line: Number(one.line || 0) || 0,
+        col: Number(one.col || 0) || 0,
+        kind: one.kind === 'rejection' ? 'rejection' : 'error',
+      }));
+    }
+    return json(res, { ok: true });
+  }
+
   if (head === 'csp-report') {
     let rep = {};
     try { rep = JSON.parse((await readReq(req)).toString('utf8') || '{}'); } catch { rep = {}; }

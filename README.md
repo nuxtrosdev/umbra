@@ -53,6 +53,37 @@ A request that already carries a BotGuard proof-of-origin token is **never**
 touched under either setting, and the token is harvested for the server-side
 ladder.
 
+## When a page half-loads: `UMBRA_TRACE=1`
+
+A page that paints its skeleton and stops has failed in one of two opposite
+ways, and from the outside they look identical. Either the document arrived
+without the data it bootstraps from, or the data arrived and the page's own
+JavaScript threw while consuming it. Guessing between them is how you patch
+the wrong half of a proxy.
+
+```
+UMBRA_TRACE=1 npm start
+```
+
+Every upstream exchange, and every exception raised inside a proxied
+document, prints to the terminal:
+
+```
+umbra·wire  d GET  200 text/html        41k   86ms  https://www.youtube.com/watch?v=…
+umbra·wire !x POST 403 json             1k    40ms  https://www.youtube.com/youtubei/v1/next?key=…
+umbra·page error: Error: R · https://www.youtube.com/s/player/base.js:42:7
+```
+
+`!` marks anything that failed. A page full of grey boxes with a clean wire
+log is a JavaScript bug; one with `!x` lines is a starved page, and the line
+says who starved it.
+
+Credentials never reach the trace: api keys, session ids, tokens, signatures
+and `cpn` values are replaced with `…`, wire capability tokens are truncated
+to eight characters, and url fragments are dropped. It is safe to paste.
+Tracing is off unless the variable is set, and the page reports nothing at
+all when it is off.
+
 ## Lending Umbra a browser (`umbra://token`)
 
 Every server-side attempt to mint a proof-of-origin token fails for one

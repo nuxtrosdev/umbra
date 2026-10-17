@@ -959,6 +959,38 @@ async function unit() {
     Y.parseVideoId('https://www.youtube.com/playlist?list=abc') === null);
 }
 
+/* ---- the trace has to be readable and must never carry a credential ---- */
+{
+  const TR = await import('../server/trace.mjs');
+  ok('wire tokens are truncated, not printed whole',
+    TR.redact('/~umbra/d/eyJ1Ijoiahsdkjfhaksdjfh.abcdef12') === '/~umbra/d/eyJ1Ijoi…',
+    TR.redact('/~umbra/d/eyJ1Ijoiahsdkjfhaksdjfh.abcdef12'));
+  const u = TR.redact('https://www.youtube.com/youtubei/v1/player?key=AIzaSySECRET&prettyPrint=false');
+  ok('api keys never reach the terminal', !/AIzaSy/.test(u) && /prettyPrint=false/.test(u), u);
+  ok('session and token params go too',
+    !/deadbeef/.test(TR.redact('https://x.test/a?sid=deadbeef&pot=deadbeef&v=abc')),
+    TR.redact('https://x.test/a?sid=deadbeef&pot=deadbeef&v=abc'));
+  ok('fragments are dropped entirely',
+    !/token/.test(TR.redact('https://x.test/a#access_token=zzz')));
+  ok('a long url is shortened but keeps its tail',
+    TR.redact('https://x.test/' + 'a'.repeat(400) + '/end.js').length <= 141);
+  ok('a failing exchange is marked so it can be found by eye',
+    TR.wireLine({ mode: 'x', status: 403, url: 'https://x.test/a' }).includes('!x'),
+    TR.wireLine({ mode: 'x', status: 403, url: 'https://x.test/a' }));
+  ok('a healthy exchange is not',
+    !TR.wireLine({ mode: 'd', status: 200, url: 'https://x.test/a' }).includes('!'));
+  ok('page exceptions are reported with their origin',
+    /rejection: boom · https:\/\/x\.test\/b\.js:12:3/.test(
+      TR.clientLine({ kind: 'rejection', message: 'boom', source: 'https://x.test/b.js', line: 12, col: 3 })),
+    TR.clientLine({ kind: 'rejection', message: 'boom', source: 'https://x.test/b.js', line: 12, col: 3 }));
+  ok('tracing is off unless asked for', TR.TRACE === false);
+  const shim = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
+  ok('the page only reports its errors when tracing is on',
+    /if \(ctx\.trace\)/.test(shim) && /clienterr/.test(shim));
+  ok('and a reporting failure can never break the page',
+    /keepalive: true/.test(shim) && /\.catch\(function \(\) \{\}\)/.test(shim));
+}
+
 /* ---- a fallback token is a real token, and has to be labelled as one ---- */
 {
   const POT = await import('../server/potoken.mjs');
