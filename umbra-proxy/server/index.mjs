@@ -368,7 +368,75 @@ const tt = (sec) => {
  * Ask the providers for this video again and return a fresh wire url for
  * the same rendition, or null when nothing comparable comes back.
  */
+/* One re-mint, reused.
+ *
+ * A media element does not fetch a file; it fetches a hundred ranges of
+ * one file and assumes every range comes from the same bytes. Re-extracting
+ * per request handed it a newly signed url each time — a different `expire`,
+ * sometimes a different CDN node — so the demuxer was asked to assemble one
+ * timeline out of what it had every reason to read as several files. A
+ * duration it cannot trust and a seek bar collapsed onto the tail is exactly
+ * what that looks like from the outside.
+ *
+ * So a refreshed url is remembered per video and itag, and handed back for
+ * as long as it is valid. The redirect target stays byte-stable across the
+ * whole of playback, and one extraction serves the hour instead of one per
+ * seek. */
+const freshMedia = new Map();
+/* Urls googlevideo has already refused once. A refusal is a property of the
+   url, not of the request, so there is nothing to learn from asking again:
+   without this, every range of an hour-long video pays its own upstream 403
+   before being rescued. */
+const refusedMedia = new Set();
+
+function rememberMedia(key, url, itag) {
+  if (freshMedia.size > 64) freshMedia.delete(freshMedia.keys().next().value);
+  freshMedia.set(key, { url, itag });
+}
+
+function noteRefused(url) {
+  if (refusedMedia.size > 256) refusedMedia.clear();
+  refusedMedia.add(url);
+}
+
+/** The url that should actually be fetched for this media token: the one it
+ *  carries, or a remembered replacement when that one is spent. Returns a
+ *  raw url so the swap can happen inside the request the element already
+ *  made — a redirect would work too, but every hop is one more chance for
+ *  the element to decide the resource changed underneath it. */
+async function liveMediaUrl(t) {
+  if (!(t && t.v) || t.r) return null;
+  if (!expiredMediaUrl(t.u) && !refusedMedia.has(t.u)) return null;
+  const f = await freshMediaFor(t);
+  return f ? f.url : null;
+}
+
+async function freshMediaFor(t) {
+  const key = `${t.v}:${t.i || 0}`;
+  const held = freshMedia.get(key);
+  if (held && !expiredMediaUrl(held.url) && !refusedMedia.has(held.url)) return held;
+  try {
+    const r = await pm.getStreams(String(t.v));
+    const d = (r && r.data) || {};
+    const all = [...(d.videoStreams || []), ...(d.audioStreams || [])].filter((f) => f && f.url);
+    if (!all.length) return null;
+    const same = all.find((f) => Number(f.itag) === Number(t.i)) || all[0];
+    rememberMedia(key, same.url, same.itag || 0);
+    console.log(`umbra: re-minted the media url for ${t.v} (itag ${t.i} -> ${same.itag}); held for the rest of playback`);
+    return freshMedia.get(key);
+  } catch (e) {
+    console.log(`umbra: could not refresh the media url for ${t.v}: ${String(e && e.message).slice(0, 120)}`);
+    return null;
+  }
+}
+
 async function reResolveMedia(t, sess, mk) {
+  const key = `${t.v}:${t.i || 0}`;
+  const held = freshMedia.get(key);
+  if (held && !expiredMediaUrl(held.url)) {
+    const ctx0 = mk(held.url, 'm', t.t);
+    return href(ctx0, held.url, 'm', { v: t.v, i: held.itag || 0, r: 1 });
+  }
   try {
     const r = await pm.getStreams(String(t.v));
     const d = (r && r.data) || {};
@@ -376,7 +444,8 @@ async function reResolveMedia(t, sess, mk) {
     if (!all.length) return null;
     const same = all.find((f) => Number(f.itag) === Number(t.i)) || all[0];
     const ctx = mk(same.url, 'm', t.t);
-    console.log(`umbra: re-minted an expired media url for ${t.v} (itag ${t.i} -> ${same.itag})`);
+    rememberMedia(key, same.url, same.itag || 0);
+    console.log(`umbra: re-minted the media url for ${t.v} (itag ${t.i} -> ${same.itag}); reused until it expires`);
     return href(ctx, same.url, 'm', { v: t.v, i: same.itag || 0, r: 1 });
   } catch (e) {
     console.log(`umbra: could not refresh the media url for ${t.v}: ${String(e && e.message).slice(0, 120)}`);
@@ -741,9 +810,11 @@ border-radius:8px;padding:10px 16px;cursor:pointer}button[disabled]{opacity:.5;c
         /* media is served in ranges, and a range that came back as a full
            200 — or as html — is the difference between a player that seeks
            and one that refuses the source outright */
-        type: (up.res.headers['content-type'] || '')
-          + (mode === 'm' && opts.range ? ' want:' + opts.range : '')
-          + (up.res.headers['content-range'] ? ' got:' + up.res.headers['content-range'] : ''),
+        type: up.res.headers['content-type'] || '',
+        range: mode === 'm'
+          ? (opts.range ? 'want ' + opts.range : 'want all')
+            + (up.res.headers['content-range'] ? ' got ' + up.res.headers['content-range'] : ' got none')
+          : '',
         bytes: Number(up.res.headers['content-length'] || -1),
         ms: Date.now() - t0,
       }));
@@ -1890,19 +1961,17 @@ async function route(req, res) {
        Checked before the request, not after it: an expired url is a
        certainty, not a possibility, and a wasted round trip to be told so
        helps nobody. `r` marks a token that has already been re-resolved,
-       so a video that is genuinely gone cannot loop. */
-    if (head === 'm' && t.v && !t.r && expiredMediaUrl(t.u)) {
-      const fresh = await reResolveMedia(t, s, mkCtx);
-      if (fresh) {
-        return send(res, 302, {
-          location: fresh,
-          'cache-control': 'no-store',
-          ...metaHeaders({ kind: 'media-refresh', videoId: t.v, itag: t.i || 0 }),
-        }, '');
-      }
-    }
+       so a video that is genuinely gone cannot loop.
 
-    const ctx = mkCtx(t.u, head, t.t);
+       The replacement is fetched inside this same request rather than
+       redirected to. The element asked this origin for a range of a file
+       and gets exactly that; which signed url behind us produced the bytes
+       is our business, and keeping it out of the element's view is what
+       lets an hour-long video keep one stable identity while its upstream
+       urls are replaced underneath. */
+    const swapped = head === 'm' ? await liveMediaUrl(t) : null;
+
+    const ctx = mkCtx(swapped || t.u, head, t.t);
     const mopts = { mode: head, range: req.headers.range || null };
     /* Expiry is the predictable reason a media url stops working, and it
        is handled above. It is not the only one: googlevideo also refuses a
@@ -1916,7 +1985,7 @@ async function route(req, res) {
        attempt at a fresh url. The `r` flag still bounds it to a single
        retry, so a video that is genuinely unavailable cannot loop. */
     if (head === 'm' && t.v && !t.r) {
-      mopts.onRefused = () => reResolveMedia(t, s, mkCtx);
+      mopts.onRefused = () => { noteRefused(ctx.url); return reResolveMedia(t, s, mkCtx); };
     }
     if (req.method && !/^(GET|HEAD)$/i.test(req.method)) {
       /* fetch/XHR with a payload (JSON RPCs, uploads): the body rode the

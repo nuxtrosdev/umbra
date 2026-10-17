@@ -1994,6 +1994,34 @@ async function wire() {
       /if \(head === 'm' && t\.v && !t\.r\) \{\s*\n\s*mopts\.onRefused/.test(ix));
     ok('when no fresh url exists the player is told why, not handed an empty 403',
       /the media host refused this url and a fresh one could not be obtained/.test(ix));
+
+    /* A media element fetches one file as a hundred ranges. Re-extracting
+       per range handed it a differently signed url each time, which is not
+       one resource with one duration. */
+    ok('a refreshed media url is remembered, not re-extracted for every range',
+      /const freshMedia = new Map\(\)/.test(ix) && /function rememberMedia\(/.test(ix) &&
+      /async function freshMediaFor\(/.test(ix),
+      'media url reuse');
+    ok('a url googlevideo already refused is not asked again, range after range',
+      /const refusedMedia = new Set\(\)/.test(ix) && /function noteRefused\(/.test(ix) &&
+      /refusedMedia\.has\(t\.u\)/.test(ix));
+    ok('the replacement is served inside the same request, so the element keeps one src',
+      /async function liveMediaUrl\(t\)/.test(ix) &&
+      /const swapped = head === 'm' \? await liveMediaUrl\(t\) : null;/.test(ix) &&
+      /mkCtx\(swapped \|\| t\.u, head, t\.t\)/.test(ix));
+    ok('and the held url is dropped once it expires or is itself refused',
+      /if \(held && !expiredMediaUrl\(held\.url\) && !refusedMedia\.has\(held\.url\)\) return held;/.test(ix));
+
+    /* want:/got: were being padded into the 16-wide content-type column and
+       came out as "want:b" — an instrument that reported nothing. */
+    const tr = fs.readFileSync(path.join(HERE, '..', 'server', 'trace.mjs'), 'utf8');
+    ok('the range a media request asked for is traced in its own column, untruncated',
+      /range = ''/.test(tr) && /range\.length < 30 \? pad\(range, 30\) : range/.test(tr));
+    const W = await import('../server/trace.mjs');
+    const line = W.wireLine({ mode: 'm', status: 206, type: 'video/mp4', range: 'want bytes=0- got bytes 0-523775/61204331', url: 'https://x.googlevideo.com/videoplayback' });
+    ok('so a full range exchange survives into the trace line',
+      line.includes('want bytes=0-') && line.includes('got bytes 0-523775/61204331'),
+      line.slice(0, 160));
   }
 
   /* A silent film is not a video. One video-only rendition — what a gated

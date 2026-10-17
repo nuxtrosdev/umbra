@@ -60,7 +60,7 @@ export const stamp = () => {
 };
 
 /** One upstream exchange. */
-export function wireLine({ mode = '?', method = 'GET', url = '', status = 0, type = '', bytes = -1, ms = -1 } = {}) {
+export function wireLine({ mode = '?', method = 'GET', url = '', status = 0, type = '', bytes = -1, ms = -1, range = '' } = {}) {
   const flag = status >= 400 || status === 0 ? '!' : ' ';
   const size = bytes >= 0 ? (bytes >= 1024 ? Math.round(bytes / 1024) + 'k' : bytes + 'b') : '';
   const bits = [
@@ -70,6 +70,11 @@ export function wireLine({ mode = '?', method = 'GET', url = '', status = 0, typ
     pad(String(type || '').split(';')[0].replace('application/', ''), 16),
     pad(size, 5),
     ms >= 0 ? pad(ms + 'ms', 6) : pad('', 6),
+    /* Its own column. Range belongs next to the url, not crammed into the
+       content-type field: that one is padded to 16 and silently ate
+       `want: bytes=0-` down to `want:b`, which read like a content-type
+       and told nobody anything. */
+    range ? (range.length < 30 ? pad(range, 30) : range) : '',
     redact(url),
   ];
   return 'umbra·wire ' + stamp() + ' ' + bits.join(' ');
