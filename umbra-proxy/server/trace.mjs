@@ -83,9 +83,11 @@ export function wireLine({ mode = '?', method = 'GET', url = '', status = 0, typ
  * silent about the requests that failed and loud about the ones that
  * worked. Anything we answer with 4xx/5xx is now reported, carrying the
  * logical url the token resolves to rather than the token. */
-export function serveLine({ mode = '?', method = 'GET', status = 0, url = '', why = '' } = {}) {
-  return 'umbra·serve ' + stamp() + ' !' + pad(mode, 1) + ' ' + pad(method, 4) + ' ' + String(status)
-    + ' ' + (why ? pad(why, 22) : pad('', 22)) + ' ' + redact(url);
+export function serveLine({ mode = '?', method = 'GET', status = 0, url = '', why = '', bytes = -1, ok = false } = {}) {
+  const size = bytes >= 0 ? (bytes >= 1024 ? Math.round(bytes / 1024) + 'k' : bytes + 'b') : '';
+  return 'umbra·serve ' + stamp() + ' ' + (ok ? ' ' : '!') + pad(mode, 1) + ' ' + pad(method, 4)
+    + ' ' + String(status) + ' ' + pad('wrote ' + (size || '?'), 12)
+    + ' ' + (why ? pad(why, 26) : pad('', 26)) + ' ' + redact(url);
 }
 
 /** One error raised by the page's own JavaScript. */

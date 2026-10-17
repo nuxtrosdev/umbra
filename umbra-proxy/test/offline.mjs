@@ -1020,6 +1020,11 @@ async function unit() {
   const l = TR.serveLine({ mode: 's', method: 'GET', status: 403, url: 'https://www.youtube.com/s/player/base.js', why: 'bad token' });
   ok('our own refusals are marked and name the logical address',
     l.includes('!s') && l.includes('403') && l.includes('bad token') && l.includes('base.js'), l);
+  const cut = TR.serveLine({ mode: 's', status: 200, url: 'https://x.test/a.js', bytes: 4096, why: 'SOCKET CLOSED MID-BODY' });
+  ok('a response that died on the way out says so, with how far it got',
+    cut.includes('!s') && cut.includes('wrote 4k') && cut.includes('SOCKET CLOSED MID-BODY'), cut);
+  const fine = TR.serveLine({ mode: 's', status: 200, url: 'https://x.test/a.js', bytes: 4096, ok: true });
+  ok('and a complete one is not marked as a failure', !fine.includes('!'), fine);
   const shim = fs.readFileSync(path.join(HERE, '..', 'public', 'shim.js'), 'utf8');
   ok('a failed subresource resolves its token back to a filename',
     /function logical\(/.test(shim) && /logical\(el\.src \|\| el\.href/.test(shim));

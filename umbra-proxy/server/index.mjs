@@ -1350,8 +1350,21 @@ const server = http.createServer(async (req, res) => {
      address it stood for — "script failed to load · /~umbra/s/eyJ1Ijoi…"
      is not an answer, and every one of them looks identical. */
   if (TRACE) {
-    res.on('finish', () => {
-      if (res.statusCode < 400) return;
+    /* Count what actually leaves, and notice when the socket closes before
+       the body is finished. A browser that records status=0 with zero bytes
+       transferred, for a request this origin answered 200, is describing a
+       response that died on the way out — and that is invisible from both
+       ends unless someone writes down how much was written and whether the
+       writer ever finished. */
+    let wrote = 0;
+    const w = res.write.bind(res);
+    const e = res.end.bind(res);
+    res.write = (chunk, ...rest) => { if (chunk) wrote += Buffer.byteLength(chunk); return w(chunk, ...rest); };
+    res.end = (chunk, ...rest) => {
+      if (chunk && typeof chunk !== 'function') wrote += Buffer.byteLength(chunk);
+      return e(chunk, ...rest);
+    };
+    const describe = () => {
       const seg = String(req.url || '').split('?')[0].split('/').filter(Boolean);
       let mode = '-';
       let logical = String(req.url || '');
@@ -1360,9 +1373,23 @@ const server = http.createServer(async (req, res) => {
         const t = seg[2] ? decodeToken(seg[2]) : null;
         if (t && t.u) logical = t.u;
       }
+      return { mode, logical };
+    };
+    res.on('close', () => {
+      const { mode, logical } = describe();
+      const clean = res.writableFinished;
+      const bad = !clean || res.statusCode >= 400;
+      /* healthy wire traffic is summarised, not narrated: only say
+         something when it failed, or when it is a mode worth watching */
+      if (!bad && mode === '-') return;
       trace(serveLine({
-        mode, method: req.method || 'GET', status: res.statusCode, url: logical,
-        why: String(res.getHeader('x-umbra-why') || ''),
+        mode,
+        method: req.method || 'GET',
+        status: res.statusCode,
+        url: logical,
+        bytes: wrote,
+        ok: !bad,
+        why: clean ? String(res.getHeader('x-umbra-why') || '') : 'SOCKET CLOSED MID-BODY',
       }));
     });
   }
@@ -1565,7 +1592,10 @@ async function route(req, res) {
       s.cspLog.push(entry);
       if (entry.blocked || entry.directive) {
         const key = entry.directive + ' ' + entry.blocked;
-        if (!CSP_SEEN.has(key)) {
+        /* While tracing, every violation is printed: the deduplication
+           that keeps normal logs readable is the enemy of a diagnosis,
+           because the second occurrence is often the informative one. */
+        if (TRACE || !CSP_SEEN.has(key)) {
           CSP_SEEN.add(key);
           if (CSP_SEEN.size > 200) CSP_SEEN.clear();
           console.log(`umbra: the browser refused ${entry.directive || 'a request'} → ` +
